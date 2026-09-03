@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "xtnd-mcp-gmail": {
+      "command": "node",
+      "args": [
+        "./dist/cli.js"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "MCP_GMAIL_PROFILE",
+        "MCP_GMAIL_CONFIG_DIR"
+      ],
+      "note": "Run `mcp-gmail setup` once to complete the Google OAuth consent. The plugin runs its bundled server and reuses the selected private profile; no OAuth client secret or refresh token is stored in this manifest or forwarded by the plugin."
+    }
+  }
+}

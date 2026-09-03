@@ -1,0 +1,79 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "xtnd-mcp-gmail",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-30",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01
+    }
+  },
+  "secrets": {
+    "required": ["CREDENTIALS_MASTER_KEY"]
+  },
+  "routes": [
+    {
+      "pattern": "gmail.mcp.xgi.io",
+      "custom_domain": true
+    }
+  ],
+  "workers_dev": false,
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "6d4b08ebabae46ac90f89192981e28a6"
+    }
+  ],
+  "vars": {
+    "GMAIL_IMAP_HOST": "imap.gmail.com",
+    "GMAIL_IMAP_PORT": "993",
+    "GMAIL_SMTP_HOST": "smtp.gmail.com",
+    "GMAIL_SMTP_PORT": "465",
+    "ALLOW_LEGACY_CREDENTIAL_HEADERS": "false",
+    "ALLOW_STATIC_MAILBOX": "false",
+    "ENABLE_LEGACY_SSE": "false",
+    "ALLOWED_ORIGINS": "",
+    "OAUTH_AUTHORIZATION_SERVER": "",
+    "OAUTH_INTROSPECTION_URL": "",
+    "OAUTH_CLIENT_ID": "",
+    "OAUTH_AUDIENCE": "",
+    "OAUTH_RESOURCE_DOCUMENTATION": ""
+  },
+  "env": {
+    "dev": {
+      "workers_dev": true,
+      "routes": [],
+      "kv_namespaces": [
+        {
+          "binding": "KV",
+          "id": "6d4b08ebabae46ac90f89192981e28a6"
+        }
+      ],
+      "vars": {
+        "GMAIL_IMAP_HOST": "imap.gmail.com",
+        "GMAIL_IMAP_PORT": "993",
+        "GMAIL_SMTP_HOST": "smtp.gmail.com",
+        "GMAIL_SMTP_PORT": "465",
+        "ALLOW_LEGACY_CREDENTIAL_HEADERS": "false",
+        "ALLOW_STATIC_MAILBOX": "false",
+        "ENABLE_LEGACY_SSE": "false",
+        "ALLOWED_ORIGINS": "",
+        "OAUTH_AUTHORIZATION_SERVER": "",
+        "OAUTH_INTROSPECTION_URL": "",
+        "OAUTH_CLIENT_ID": "",
+        "OAUTH_AUDIENCE": "",
+        "OAUTH_RESOURCE_DOCUMENTATION": ""
+      },
+      "secrets": {
+        "required": ["CREDENTIALS_MASTER_KEY"]
+      }
+    }
+  }
+}

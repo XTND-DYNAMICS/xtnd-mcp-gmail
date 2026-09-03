@@ -1,0 +1,33 @@
+# Smithery configuration for @xtnd-dynamics/mcp-gmail
+# Supports both Google App Password mode and Google OAuth2 profiles.
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      email:
+        type: string
+        title: "Gmail / Google Workspace Email"
+        description: "Your Google Mail or Google Workspace email address"
+      appPassword:
+        type: string
+        title: "Google App Password"
+        description: "16-character Google App Password (from myaccount.google.com/apppasswords)"
+      profile:
+        type: string
+        title: "OAuth Profile Name"
+        description: "Optional named OAuth profile configured with mcp-gmail setup"
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', '@xtnd-dynamics/mcp-gmail'],
+      env: {
+        ...(config.email ? { GMAIL_EMAIL: config.email } : {}),
+        ...(config.appPassword ? { GMAIL_APP_PASSWORD: config.appPassword } : {}),
+        ...(config.profile ? { MCP_GMAIL_PROFILE: config.profile } : {})
+      }
+    })
+  exampleConfig:
+    email: "user@gmail.com"
+    appPassword: "abcd efgh ijkl mnop"

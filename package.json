@@ -1,0 +1,76 @@
+{
+  "name": "@xtnd-dynamics/mcp-gmail",
+  "version": "0.1.0",
+  "description": "Secure MCP server for Gmail with OAuth2 desktop profiles and an encrypted hosted credential vault.",
+  "license": "MIT",
+  "author": "XTND Dynamics",
+  "homepage": "https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "email",
+    "gmail",
+    "google-workspace",
+    "oauth2",
+    "ai-agent"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "mcp-gmail": "./dist/cli.js",
+    "xtnd-mcp-gmail": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    ".mcp.json",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE",
+    "smithery.yaml",
+    "assets"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "prepack": "npm run build",
+    "sync:smithery": "tsx scripts/sync-smithery.ts",
+    "test": "tsx --test test/*.test.ts",
+    "test:security": "tsx --test test/oauth-pkce.test.ts test/local-profile-store.test.ts test/scopes.test.ts test/worker-auth.test.ts",
+    "test:stdio": "tsx scripts/test-local-stdio.ts",
+    "typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "worker-mailer": "^1.2.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.127.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
