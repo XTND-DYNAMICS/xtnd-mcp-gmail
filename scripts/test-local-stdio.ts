@@ -51,7 +51,8 @@ async function main(): Promise<void> {
   }
 
   const labels = await client.readResource({ uri: 'gmail://labels' });
-  if (!labels.contents[0]?.text?.toString().includes('INBOX')) {
+  const content = labels.contents[0];
+  if (!content || !('text' in content) || !content.text.includes('INBOX')) {
     throw new Error('gmail://labels did not return the stub label catalog.');
   }
 
