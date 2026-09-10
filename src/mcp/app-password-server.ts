@@ -206,8 +206,21 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
       id: z.string().describe('ID or UID of the email being replied to'),
       bodyText: z.string().describe('The reply body'),
       replyAll: z.boolean().default(false).describe('Keep everyone already on the thread in Cc'),
+      additionalCc: z.string().optional().describe(
+        'Extra Cc addresses, comma separated, merged with the ones derived from the original. '
+        + 'Use it to bring someone into a thread they were not on. Duplicates are removed.',
+      ),
+      bodyHtml: z.string().optional().describe(
+        'Optional HTML body, sent alongside bodyText as multipart/alternative. Required for '
+        + 'anything that depends on layout: Gmail renders plain text in a proportional font, so '
+        + 'a text table collapses into ragged columns. Use a real <table> here instead.',
+      ),
+      attachments: z.array(z.string()).optional().describe(
+        'Absolute paths to files to attach. Each is read from disk and added as its own MIME '
+        + 'part, so the draft opens in Gmail with the files already attached and ready to send.',
+      ),
     },
-    async ({ folder, id, bodyText, replyAll }) => {
+    async ({ folder, id, bodyText, replyAll, additionalCc, bodyHtml, attachments }) => {
       try {
         const uid = parseInt(id, 10);
         const result = await getClient().createReplyDraft(
@@ -215,6 +228,9 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
           isNaN(uid) ? 1 : uid,
           bodyText,
           replyAll,
+          additionalCc,
+          bodyHtml,
+          attachments,
         );
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err: any) {

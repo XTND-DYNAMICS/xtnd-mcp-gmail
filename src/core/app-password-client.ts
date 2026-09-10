@@ -5,6 +5,8 @@
  */
 
 import * as tls from 'node:tls';
+import { readFileSync } from 'node:fs';
+import { basename, extname } from 'node:path';
 import {
   EmailDetail,
   EmailHeaderSummary,
@@ -13,6 +15,13 @@ import {
   SearchOptions,
   SendEmailOptions,
 } from '../types.js';
+import {
+  decodeEncodedWords,
+  extractFetchLiteral,
+  parseHeaderBlock,
+  parseMimeMessage,
+} from './parser/imap-message.js';
+import { htmlToMarkdown } from './parser/markdown.js';
 
 class ImapConnection {
   private socket: tls.TLSSocket | null = null;
@@ -183,6 +192,105 @@ class SmtpConnection {
     } catch {}
     this.socket = null;
   }
+}
+
+/**
+ * Split an address header into individual addresses.
+ *
+ * Storing the whole header as one entry looks harmless until reply-all filters
+ * out "our own address": a substring match against the blob then discards every
+ * other recipient on the line with it.
+ *
+ * Commas inside a quoted display name do not separate addresses, so the split
+ * tracks quoting and angle-bracket depth instead of using String.split.
+ */
+function splitAddressHeader(value: string): { address: string }[] {
+  if (!value) return [];
+
+  const entries: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let inAngles = false;
+
+  for (const character of value) {
+    if (character === '"') {
+      inQuotes = !inQuotes;
+    } else if (character === '<' && !inQuotes) {
+      inAngles = true;
+    } else if (character === '>' && !inQuotes) {
+      inAngles = false;
+    } else if (character === ',' && !inQuotes && !inAngles) {
+      entries.push(current);
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  entries.push(current);
+
+  return entries
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((address) => ({ address }));
+}
+
+/** Base64 a UTF-8 body and wrap it to the 76-character MIME line limit. */
+function base64Body(value: string): string {
+  const encoded = Buffer.from(value, 'utf8').toString('base64');
+  return encoded.match(/.{1,76}/g)?.join('\r\n') ?? encoded;
+}
+
+function base64Bytes(buf: Buffer): string {
+  const encoded = buf.toString('base64');
+  return encoded.match(/.{1,76}/g)?.join('\r\n') ?? encoded;
+}
+
+/** Content-Type for the few kinds of file that actually get mailed. */
+function mediaTypeFor(name: string): string {
+  const types: Record<string, string> = {
+    '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+    '.txt': 'text/plain', '.csv': 'text/csv', '.html': 'text/html',
+    '.json': 'application/json', '.zip': 'application/zip',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  };
+  return types[extname(name).toLowerCase()] ?? 'application/octet-stream';
+}
+
+/**
+ * Filename for Content-Disposition. Plain ASCII goes in quoted form; anything
+ * else also gets an RFC 2231 filename* so clients do not mangle the Danish
+ * characters a document title is likely to contain.
+ */
+function dispositionFilename(name: string): string {
+  const quoted = `filename="${name.replace(/[\\"]/g, '\\$&')}"`;
+  if (/^[\x20-\x7e]*$/.test(name)) return quoted;
+  return `${quoted}; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+/**
+ * Merge extra Cc addresses into the set derived from the original message,
+ * without duplicating anyone already on it. Comparison is on the bare address,
+ * so "Britt Siomka <bsi@…>" and "bsi@…" are recognised as the same person.
+ */
+function mergeCc(derived: string | undefined, additional: string | undefined): string | undefined {
+  const entries = [
+    ...(derived ? derived.split(',') : []),
+    ...(additional ? additional.split(',') : []),
+  ].map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const entry of entries) {
+    const bare = (entry.match(/<([^>]+)>/)?.[1] ?? entry).trim().toLowerCase();
+    if (seen.has(bare)) continue;
+    seen.add(bare);
+    unique.push(entry);
+  }
+
+  return unique.length > 0 ? unique.join(', ') : undefined;
 }
 
 export class AppPasswordGmailClient {
@@ -392,6 +500,7 @@ export class AppPasswordGmailClient {
         cc: ccList.length > 0 ? ccList.join(', ') : undefined,
         subject: options.subject,
         bodyText: options.bodyText || '',
+        bodyHtml: options.bodyHtml,
         inReplyTo: options.inReplyTo,
         references: options.references,
       });
@@ -410,15 +519,18 @@ export class AppPasswordGmailClient {
     uid: number,
     bodyText: string,
     replyAll = false,
+    additionalCc?: string,
+    bodyHtml?: string,
   ): Promise<{ success: boolean; messageId: string; to: string; cc?: string; subject: string }> {
     const envelope = await this.buildReplyEnvelope(folder, uid, replyAll);
-    const sent = await this.sendEmail({ ...envelope, bodyText });
+    const cc = mergeCc(envelope.cc, additionalCc);
+    const sent = await this.sendEmail({ ...envelope, cc, bodyText, bodyHtml });
 
     return {
       success: sent.success,
       messageId: sent.messageId,
       to: envelope.to,
-      cc: envelope.cc,
+      cc,
       subject: envelope.subject,
     };
   }
@@ -472,11 +584,11 @@ export class AppPasswordGmailClient {
     bcc?: string;
     subject: string;
     bodyText: string;
+    bodyHtml?: string;
     inReplyTo?: string;
     references?: string;
+    attachments?: string[];
   }): string {
-    const body = Buffer.from(options.bodyText, 'utf8').toString('base64');
-    const wrapped = body.match(/.{1,76}/g)?.join('\r\n') ?? body;
     const subject = `=?UTF-8?B?${Buffer.from(options.subject, 'utf8').toString('base64')}?=`;
 
     const headers = [
@@ -489,11 +601,78 @@ export class AppPasswordGmailClient {
       ...(options.inReplyTo ? [`In-Reply-To: ${options.inReplyTo}`] : []),
       ...(options.references ? [`References: ${options.references}`] : []),
       'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: base64',
     ];
 
-    return `${headers.join('\r\n')}\r\n\r\n${wrapped}\r\n`;
+    // The body is built first and independently of the envelope, so it can be
+    // used on its own or nested inside a multipart/mixed wrapper.
+    const body = this.composeBodyPart(options.bodyText, options.bodyHtml);
+
+    if (!options.attachments?.length) {
+      return [...headers, ...body, ''].join('\r\n');
+    }
+
+    const mixed = `====_Mixed_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}_====`;
+    const parts: string[] = [
+      ...headers,
+      `Content-Type: multipart/mixed; boundary="${mixed}"`,
+      '',
+      `--${mixed}`,
+      ...body,
+      '',
+    ];
+
+    for (const path of options.attachments) {
+      const data = readFileSync(path);
+      const name = basename(path);
+      parts.push(
+        `--${mixed}`,
+        `Content-Type: ${mediaTypeFor(name)}; name="${name}"`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; ${dispositionFilename(name)}`,
+        '',
+        base64Bytes(data),
+        '',
+      );
+    }
+
+    parts.push(`--${mixed}--`, '');
+    return parts.join('\r\n');
+  }
+
+  /** The message body: a single text part, or text plus its HTML alternative. */
+  private composeBodyPart(bodyText: string, bodyHtml?: string): string[] {
+    if (!bodyHtml) {
+      return [
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        base64Body(bodyText),
+      ];
+    }
+
+    // multipart/alternative: mail clients that render HTML show the formatted
+    // version, everything else falls back to the plain text. Anything that
+    // needs alignment — a table — only survives in the HTML part, because
+    // Gmail renders text/plain in a proportional font.
+    const boundary = `====_Alt_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}_====`;
+
+    return [
+      `Content-Type: multipart/alternative; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      base64Body(bodyText),
+      '',
+      `--${boundary}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      base64Body(bodyHtml),
+      '',
+      `--${boundary}--`,
+    ];
   }
 
   /**
@@ -529,7 +708,11 @@ export class AppPasswordGmailClient {
     return {
       to: recipients.join(', '),
       cc: cc.length > 0 ? cc.join(', ') : undefined,
-      subject: /^re:/i.test(original.subject) ? original.subject : `Re: ${original.subject}`,
+      // Danish and German clients prefix with SV:/VS:/AW: rather than Re:.
+      // Without recognising those, a reply to a Danish thread reads "Re: SV:".
+      subject: /^\s*(re|sv|vs|aw|antw|ref)\s*:/i.test(original.subject)
+        ? original.subject
+        : `Re: ${original.subject}`,
       inReplyTo: original.messageId,
       references,
     };
@@ -541,8 +724,10 @@ export class AppPasswordGmailClient {
     bcc?: string;
     subject: string;
     bodyText: string;
+    bodyHtml?: string;
     inReplyTo?: string;
     references?: string;
+    attachments?: string[];
   }): Promise<{ success: boolean; folder: string }> {
     const imap = await this.getImap();
     try {
@@ -568,57 +753,73 @@ export class AppPasswordGmailClient {
     uid: number,
     bodyText: string,
     replyAll = false,
+    additionalCc?: string,
+    bodyHtml?: string,
+    attachments?: string[],
   ): Promise<{ success: boolean; folder: string; to: string; cc?: string; subject: string }> {
     const envelope = await this.buildReplyEnvelope(folder, uid, replyAll);
-    const result = await this.createDraft({ ...envelope, bodyText });
+    const cc = mergeCc(envelope.cc, additionalCc);
+    const result = await this.createDraft({ ...envelope, cc, bodyText, bodyHtml, attachments });
 
     return {
       success: result.success,
       folder: result.folder,
       to: envelope.to,
-      cc: envelope.cc,
+      cc,
       subject: envelope.subject,
     };
   }
 
-  private parseEnvelopeHeader(raw: string, id: string): EmailHeaderSummary {
-    const getHeader = (name: string) => {
-      const match = raw.match(new RegExp(`^${name}:\\s*(.+)$`, 'im'));
-      return match ? match[1].trim() : '';
-    };
-    const cc = getHeader('Cc');
-    const replyTo = getHeader('Reply-To');
-    const references = getHeader('References');
-    const inReplyTo = getHeader('In-Reply-To');
+  /**
+   * Build the envelope summary from an already-parsed header map.
+   *
+   * Header names arrive lowercased and unfolded, and encoded-words are decoded
+   * here so callers see "Anders Rähr" rather than "=?utf-8?B?QW5kZXJz…?=".
+   */
+  private envelopeFromHeaders(headers: Record<string, string>, id: string): EmailHeaderSummary {
+    const header = (name: string) => decodeEncodedWords(headers[name] ?? '');
+
+    const cc = header('cc');
+    const replyTo = header('reply-to');
+    const references = headers.references ?? '';
+    const inReplyTo = headers['in-reply-to'] ?? '';
 
     return {
       id,
       threadId: id,
-      messageId: getHeader('Message-ID') || `<${id}@gmail.com>`,
-      from: [{ address: getHeader('From') }],
-      to: [{ address: getHeader('To') }],
+      messageId: headers['message-id'] || `<${id}@gmail.com>`,
+      from: splitAddressHeader(header('from')),
+      to: splitAddressHeader(header('to')),
       // Threading and Cc are what a reply needs to stay in the conversation
       // and keep everyone who was already on it.
-      ...(cc ? { cc: [{ address: cc }] } : {}),
-      ...(replyTo ? { replyTo: [{ address: replyTo }] } : {}),
+      ...(cc ? { cc: splitAddressHeader(cc) } : {}),
+      ...(replyTo ? { replyTo: splitAddressHeader(replyTo) } : {}),
       ...(references ? { references } : {}),
       ...(inReplyTo ? { inReplyTo } : {}),
-      subject: getHeader('Subject'),
-      date: getHeader('Date'),
+      subject: header('subject'),
+      date: header('date'),
       snippet: '',
       labelIds: [],
       hasAttachments: false,
     };
   }
 
+  private parseEnvelopeHeader(raw: string, id: string): EmailHeaderSummary {
+    return this.envelopeFromHeaders(parseHeaderBlock(extractFetchLiteral(raw)), id);
+  }
+
   private parseFullMessage(raw: string, id: string): EmailDetail {
-    const header = this.parseEnvelopeHeader(raw, id);
-    const bodyIdx = raw.indexOf('\r\n\r\n');
-    const rawBody = bodyIdx !== -1 ? raw.slice(bodyIdx + 4) : raw;
+    // Strip the IMAP FETCH wrapper first: without it the response terminator
+    // ends up appended to the message body.
+    const message = parseMimeMessage(extractFetchLiteral(raw));
+    const header = this.envelopeFromHeaders(message.headers, id);
+    const text = message.text || (message.html ? htmlToMarkdown(message.html) : '');
+
     return {
       ...header,
-      bodyText: rawBody,
-      bodyMarkdown: rawBody,
+      bodyText: message.text || undefined,
+      bodyHtml: message.html || undefined,
+      bodyMarkdown: text,
       attachments: [],
     };
   }
