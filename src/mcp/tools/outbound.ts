@@ -44,27 +44,15 @@ export function registerOutboundTools(server: McpServer, getClient: () => GmailC
 
   server.tool(
     'reply_message',
-    'Reply in-thread to an existing message. Recipients, subject and the References chain are '
-    + 'derived from the original so Gmail groups the reply correctly.',
+    'Reply in-thread to an existing message. Recipients, subject, threading headers, and quoted original are automatically managed.',
     ReplyMessageSchema.shape,
     async (args) => run('reply_message', async () => {
-      const parent = await getClient().getMessage(args.messageId, 'full');
-      const sent = await getClient().sendMessage({
-        from: args.from,
-        to: (parent.replyTo?.length ? parent.replyTo : parent.from).map((a) => a.address),
-        cc: args.replyAll
-          ? [...(parent.to ?? []), ...(parent.cc ?? [])]
-              .map((a) => a.address)
-              .filter((a) => a.toLowerCase() !== getClient().mailbox.toLowerCase())
-          : undefined,
-        subject: replySubject(parent.subject),
+      const sent = await getClient().replyToMessage(args.messageId, {
         bodyText: args.bodyText,
         bodyHtml: args.bodyHtml,
-        inReplyTo: parent.messageId,
-        references: [parent.references, parent.messageId].filter(Boolean).join(' ').trim(),
-        threadId: parent.threadId,
-        attachments: args.attachments as any,
-        attachEmailUids: args.attachEmailIds,
+        replyAll: args.replyAll,
+        from: args.from,
+        quoteOriginal: args.quoteOriginal,
       });
 
       return {

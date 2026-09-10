@@ -10,6 +10,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GmailClient } from '../../core/client.js';
 import {
   CreateDraftSchema,
+  CreateReplyDraftSchema,
   DeleteDraftSchema,
   GetDraftSchema,
   ListDraftsSchema,
@@ -45,6 +46,31 @@ export function registerDraftTools(server: McpServer, getClient: () => GmailClie
         threadId: draft.message.threadId,
         to: args.to,
         subject: args.subject,
+      };
+    }),
+  );
+
+  server.tool(
+    'create_reply_draft',
+    'Create a reply draft to an existing email in Gmail Drafts folder. Derives recipient, subject, threading headers, and automatically quotes the original message.',
+    CreateReplyDraftSchema.shape,
+    async (args) => run('create_reply_draft', async () => {
+      const draft = await getClient().createReplyDraft(args.messageId, {
+        bodyText: args.bodyText,
+        bodyHtml: args.bodyHtml,
+        replyAll: args.replyAll,
+        from: args.from,
+        quoteOriginal: args.quoteOriginal,
+      });
+
+      return {
+        created: true,
+        draftId: draft.id,
+        messageId: draft.message.id,
+        threadId: draft.message.threadId,
+        to: draft.message.to,
+        cc: draft.message.cc,
+        subject: draft.message.subject,
       };
     }),
   );

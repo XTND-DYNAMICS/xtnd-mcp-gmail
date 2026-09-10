@@ -12,6 +12,7 @@ import { basename, extname } from 'node:path';
 import {
   AttachedEmail,
   CreateDraftOptions,
+  EmailAddress,
   EmailAttachment,
   EmailDetail,
   EmailHeaderSummary,
@@ -191,9 +192,9 @@ class SmtpConnection {
   async sendMail(from: string, to: string | string[], rawMime: string): Promise<{ messageId: string }> {
     await this.sendCommand(`MAIL FROM:<${from}>`, '250');
     const toList = Array.isArray(to) ? to : to.split(',');
-    const recipients = toList.map((r) => r.trim());
+    const recipients = toList.map((r) => r.trim()).filter(Boolean);
     for (const r of recipients) {
-      const cleanTo = r.includes('<') ? r.match(/<([^>]+)>/)?.[1] || r : r;
+      const cleanTo = extractBareEmail(r) || r;
       await this.sendCommand(`RCPT TO:<${cleanTo}>`, '250');
     }
     await this.sendCommand('DATA', '354');
@@ -215,7 +216,17 @@ class SmtpConnection {
   }
 }
 
-function splitAddressHeader(value: string): { address: string }[] {
+export function extractBareEmail(input: string): string {
+  if (!input) return '';
+  const match = input.match(/<([^>]+)>/);
+  return (match ? match[1] : input).trim().toLowerCase();
+}
+
+export function formatAddresses(addresses: EmailAddress[]): string {
+  return (addresses || []).map((a) => (a.name ? `"${a.name}" <${a.address}>` : a.address)).join(', ');
+}
+
+export function splitAddressHeader(value: string): EmailAddress[] {
   if (!value) return [];
 
   const entries: string[] = [];
@@ -242,7 +253,17 @@ function splitAddressHeader(value: string): { address: string }[] {
   return entries
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
-    .map((address) => ({ address }));
+    .map((raw) => {
+      const nameMatch = raw.match(/^"?([^"<]+)"?\s*<([^>]+)>$/);
+      if (nameMatch) {
+        return { name: nameMatch[1].trim(), address: nameMatch[2].trim() };
+      }
+      const angleMatch = raw.match(/<([^>]+)>/);
+      if (angleMatch) {
+        return { address: angleMatch[1].trim() };
+      }
+      return { address: raw };
+    });
 }
 
 function base64Body(value: string): string {
@@ -257,10 +278,17 @@ function base64Bytes(buf: Buffer): string {
 
 function mediaTypeFor(name: string): string {
   const types: Record<string, string> = {
-    '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-    '.txt': 'text/plain', '.csv': 'text/csv', '.html': 'text/html',
-    '.json': 'application/json', '.zip': 'application/zip',
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.txt': 'text/plain',
+    '.csv': 'text/csv',
+    '.html': 'text/html',
+    '.json': 'application/json',
+    '.zip': 'application/zip',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     '.eml': 'message/rfc822',
@@ -274,7 +302,7 @@ function dispositionFilename(name: string): string {
   return `${quoted}; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
-function mergeCc(derived: string | undefined, additional: string | undefined): string | undefined {
+export function mergeCc(derived: string | undefined, additional: string | undefined): string | undefined {
   const entries = [
     ...(derived ? derived.split(',') : []),
     ...(additional ? additional.split(',') : []),
@@ -284,13 +312,46 @@ function mergeCc(derived: string | undefined, additional: string | undefined): s
   const unique: string[] = [];
 
   for (const entry of entries) {
-    const bare = (entry.match(/<([^>]+)>/)?.[1] ?? entry).trim().toLowerCase();
-    if (seen.has(bare)) continue;
+    const bare = extractBareEmail(entry);
+    if (!bare || seen.has(bare)) continue;
     seen.add(bare);
     unique.push(entry);
   }
 
   return unique.length > 0 ? unique.join(', ') : undefined;
+}
+
+export function formatQuotedReply(
+  userText: string,
+  original: EmailDetail,
+  quoteOriginal = true,
+  userHtml?: string
+): { bodyText: string; bodyHtml?: string } {
+  if (!quoteOriginal) {
+    return { bodyText: userText, bodyHtml: userHtml };
+  }
+
+  if (/^on\s.+wrote:\s*$/im.test(userText) || userText.includes('---------- Forwarded message ---------')) {
+    return { bodyText: userText, bodyHtml: userHtml };
+  }
+
+  const senderName = original.from.map((f) => (f.name ? `"${f.name}" <${f.address}>` : f.address)).join(', ') || 'Sender';
+  const dateStr = original.date || new Date().toUTCString();
+  const attribution = `On ${dateStr}, ${senderName} wrote:`;
+
+  const origText = original.bodyText || original.bodyMarkdown || '';
+  const quotedLines = origText.split('\n').map((line) => `> ${line}`).join('\n');
+  const bodyText = `${userText.trim()}\n\n${attribution}\n${quotedLines}`;
+
+  let bodyHtml: string | undefined;
+  if (userHtml || original.bodyHtml) {
+    const userPart = userHtml || userText.replace(/\n/g, '<br>');
+    const origPart = original.bodyHtml || origText.replace(/\n/g, '<br>');
+    const attrHtml = attribution.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    bodyHtml = `<div>${userPart}</div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">${attrHtml}<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${origPart}</blockquote></div>`;
+  }
+
+  return { bodyText, bodyHtml };
 }
 
 export class AppPasswordGmailClient {
@@ -318,10 +379,6 @@ export class AppPasswordGmailClient {
     return imap;
   }
 
-  /**
-   * Resolve Gmail localized special-use folders by their flag:
-   * \Drafts, \Trash, \All, \Sent, \Flagged, \Junk, \Important
-   */
   private async resolveSpecialFolder(imap: ImapConnection, flag: string): Promise<string> {
     if (this.specialFolders[flag]) return this.specialFolders[flag]!;
 
@@ -343,15 +400,12 @@ export class AppPasswordGmailClient {
       return this.specialFolders[flag]!;
     }
 
-    // Fallbacks
     if (flag === '\\Drafts') return '[Gmail]/Drafts';
     if (flag === '\\Trash') return '[Gmail]/Trash';
     if (flag === '\\All') return '[Gmail]/All Mail';
     if (flag === '\\Sent') return '[Gmail]/Sent Mail';
     return 'INBOX';
   }
-
-  // ---------------------------------------------------------------- Profile
 
   async getProfile(): Promise<GmailProfile> {
     const folders = await this.listFolders();
@@ -366,8 +420,6 @@ export class AppPasswordGmailClient {
       historyId: '1',
     };
   }
-
-  // ---------------------------------------------------------------- Labels / Folders
 
   async listFolders(): Promise<MailboxFolder[]> {
     const imap = await this.getImap();
@@ -438,8 +490,6 @@ export class AppPasswordGmailClient {
     }
   }
 
-  // ---------------------------------------------------------------- Search & Read
-
   async searchEmails(options: {
     folder?: string;
     query?: string;
@@ -457,16 +507,13 @@ export class AppPasswordGmailClient {
 
       let uids: number[] = [];
 
-      // Prefer native Gmail search syntax via X-GM-RAW when query is provided
       if (options.query) {
         try {
           const rawQuery = options.unreadOnly ? `is:unread ${options.query}` : options.query;
           const resp = await imap.sendCommand(`UID SEARCH X-GM-RAW "${rawQuery.replace(/"/g, '\\"')}"`);
           const searchLine = resp.split('\r\n').find((l) => l.startsWith('* SEARCH')) || '';
           uids = searchLine.replace('* SEARCH', '').trim().split(/\s+/).filter(Boolean).map(Number);
-        } catch {
-          // Fall back to standard IMAP SEARCH
-        }
+        } catch {}
       }
 
       if (uids.length === 0 && !options.query) {
@@ -489,7 +536,7 @@ export class AppPasswordGmailClient {
       for (const uid of targetUids) {
         try {
           const fetchResp = await imap.sendCommand(
-            `UID FETCH ${uid} (UID X-GM-THRID X-GM-MSGID X-GM-LABELS FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO CC BCC SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])`
+            `UID FETCH ${uid} (UID X-GM-THRID X-GM-MSGID X-GM-LABELS FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO CC BCC SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES CONTENT-TYPE)])`
           );
           emails.push(this.parseEnvelopeHeader(fetchResp, String(uid)));
         } catch {}
@@ -505,14 +552,14 @@ export class AppPasswordGmailClient {
     return (await this.searchEmails({ folder, limit, unreadOnly: false })).emails;
   }
 
-  async getEmailContent(folder: string, uid: number): Promise<EmailDetail> {
+  async getEmailContent(folder: string, uid: number, includeAttachmentData = false): Promise<EmailDetail> {
     const imap = await this.getImap();
     try {
       await imap.select(folder);
       const resp = await imap.sendCommand(
         `UID FETCH ${uid} (UID X-GM-THRID X-GM-MSGID X-GM-LABELS FLAGS BODY.PEEK[])`
       );
-      return this.parseFullMessage(resp, String(uid));
+      return this.parseFullMessage(resp, String(uid), includeAttachmentData);
     } finally {
       await imap.close();
     }
@@ -542,7 +589,7 @@ export class AppPasswordGmailClient {
     attachmentIdOrFilename: string,
     saveToPath?: string
   ): Promise<{ filename: string; contentType: string; size: number; dataBase64: string; savedToPath?: string }> {
-    const email = await this.getEmailContent(folder, uid);
+    const email = await this.getEmailContent(folder, uid, true);
     const attachments = email.attachments || [];
 
     const found = attachments.find(
@@ -567,24 +614,21 @@ export class AppPasswordGmailClient {
     };
   }
 
-  async getEmailThread(folder: string, idOrThreadId: string): Promise<GmailThread> {
+  async getEmailThread(folder: string, idOrThreadId: string, includeAttachmentData = false): Promise<GmailThread> {
     const imap = await this.getImap();
     try {
       await imap.select(folder);
       let uids: number[] = [];
 
-      // 1. Check if id is an X-GM-THRID
       try {
         const resp = await imap.sendCommand(`UID SEARCH X-GM-THRID ${idOrThreadId}`);
         const searchLine = resp.split('\r\n').find((l) => l.startsWith('* SEARCH')) || '';
         uids = searchLine.replace('* SEARCH', '').trim().split(/\s+/).filter(Boolean).map(Number);
       } catch {}
 
-      // 2. If no messages found, check if it's a direct UID
       if (uids.length === 0) {
         const uidNum = parseInt(idOrThreadId, 10);
         if (!isNaN(uidNum)) {
-          // Fetch the message to get its X-GM-THRID
           try {
             const meta = await imap.sendCommand(`UID FETCH ${uidNum} (X-GM-THRID)`);
             const thridMatch = meta.match(/X-GM-THRID (\d+)/);
@@ -603,7 +647,7 @@ export class AppPasswordGmailClient {
       for (const uid of uids) {
         try {
           const resp = await imap.sendCommand(`UID FETCH ${uid} (UID X-GM-THRID X-GM-MSGID X-GM-LABELS FLAGS BODY.PEEK[])`);
-          messages.push(this.parseFullMessage(resp, String(uid)));
+          messages.push(this.parseFullMessage(resp, String(uid), includeAttachmentData));
         } catch {}
       }
 
@@ -617,9 +661,7 @@ export class AppPasswordGmailClient {
     }
   }
 
-  // ---------------------------------------------------------------- Drafts Lifecycle
-
-  async listDrafts(limit = 20): Promise<{ count: number; drafts: GmailDraft[] }> {
+  async listDrafts(limit = 20, includeAttachmentData = false): Promise<{ count: number; drafts: GmailDraft[] }> {
     const imap = await this.getImap();
     try {
       const draftsFolder = await this.resolveSpecialFolder(imap, '\\Drafts');
@@ -633,15 +675,12 @@ export class AppPasswordGmailClient {
       for (const uid of uids) {
         try {
           const fetchResp = await imap.sendCommand(
-            `UID FETCH ${uid} (UID X-GM-THRID X-GM-MSGID X-GM-LABELS FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO CC BCC SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])`
+            `UID FETCH ${uid} (UID X-GM-THRID X-GM-MSGID X-GM-LABELS FLAGS BODY.PEEK[])`
           );
-          const header = this.parseEnvelopeHeader(fetchResp, String(uid));
+          const message = this.parseFullMessage(fetchResp, String(uid), includeAttachmentData);
           drafts.push({
             id: String(uid),
-            message: {
-              ...header,
-              attachments: [],
-            },
+            message,
           });
         } catch {}
       }
@@ -652,14 +691,14 @@ export class AppPasswordGmailClient {
     }
   }
 
-  async getDraft(draftId: string): Promise<GmailDraft> {
+  async getDraft(draftId: string, includeAttachmentData = false): Promise<GmailDraft> {
     const imap = await this.getImap();
     try {
       const draftsFolder = await this.resolveSpecialFolder(imap, '\\Drafts');
       await imap.select(draftsFolder);
       const uid = parseInt(draftId, 10);
       const resp = await imap.sendCommand(`UID FETCH ${isNaN(uid) ? 1 : uid} (UID X-GM-THRID X-GM-MSGID X-GM-LABELS FLAGS BODY.PEEK[])`);
-      const message = this.parseFullMessage(resp, draftId);
+      const message = this.parseFullMessage(resp, draftId, includeAttachmentData);
       return { id: draftId, message };
     } finally {
       await imap.close();
@@ -671,7 +710,6 @@ export class AppPasswordGmailClient {
     try {
       const folder = await this.resolveSpecialFolder(imap, '\\Drafts');
 
-      // If attachEmailUids are provided, fetch their raw EML and attach them
       const attachedEmails: AttachedEmail[] = [...(options.attachedEmails || [])];
       if (options.attachEmailUids?.length) {
         for (const uid of options.attachEmailUids) {
@@ -695,6 +733,8 @@ export class AppPasswordGmailClient {
         subject: options.subject || '',
         bodyText: options.bodyText || '',
         bodyHtml: options.bodyHtml,
+        inReplyTo: options.inReplyTo,
+        references: options.references,
         attachments: options.attachments,
         attachedEmails,
       });
@@ -720,14 +760,21 @@ export class AppPasswordGmailClient {
     bodyHtml?: string,
     attachments?: (string | OutboundAttachment)[],
     attachEmailUids?: (string | number)[],
-  ): Promise<{ success: boolean; created: boolean; folder: string; draftId: string; to: string; cc?: string; subject: string }> {
+    quoteOriginal = true,
+  ): Promise<{ success: boolean; created: boolean; folder: string; draftId: string; to: string; cc?: string; subject: string; inReplyTo: string; references: string; threadId?: string }> {
     const envelope = await this.buildReplyEnvelope(folder, uid, replyAll);
     const cc = mergeCc(envelope.cc, additionalCc);
+    const quoted = formatQuotedReply(bodyText, envelope.original, quoteOriginal, bodyHtml);
+
     const result = await this.createDraft({
-      ...envelope,
+      to: envelope.to,
       cc,
-      bodyText,
-      bodyHtml,
+      subject: envelope.subject,
+      bodyText: quoted.bodyText,
+      bodyHtml: quoted.bodyHtml,
+      inReplyTo: envelope.inReplyTo,
+      references: envelope.references,
+      threadId: envelope.threadId,
       attachments,
       attachEmailUids,
     });
@@ -740,41 +787,169 @@ export class AppPasswordGmailClient {
       to: envelope.to,
       cc,
       subject: envelope.subject,
+      inReplyTo: envelope.inReplyTo,
+      references: envelope.references,
+      threadId: envelope.threadId,
     };
+  }
+
+  async createForwardDraft(
+    folder: string,
+    uid: number,
+    to: string,
+    comment?: string,
+    bodyHtml?: string,
+    attachments?: (string | OutboundAttachment)[],
+    attachAsEml = false,
+  ): Promise<{ success: boolean; created: boolean; draftId: string; folder: string; to: string; subject: string }> {
+    const original = await this.getEmailContent(folder, uid, true);
+    const subject = /^\s*(fwd|fw|viderestil|vs)\s*:/i.test(original.subject)
+      ? original.subject
+      : `Fwd: ${original.subject}`;
+
+    if (attachAsEml) {
+      const rawResult = await this.getRawEmail(folder, uid);
+      const draft = await this.createDraft({
+        to,
+        subject,
+        bodyText: comment || 'Attached is the forwarded message.',
+        bodyHtml,
+        attachments,
+        attachedEmails: [{
+          filename: `${original.subject.replace(/[/\\?%*:|"<>]/g, '_')}.eml`,
+          rawEml: rawResult.raw,
+        }],
+      });
+      return { success: true, created: true, draftId: draft.draftId, folder: draft.folder, to, subject };
+    }
+
+    const origAttachments: OutboundAttachment[] = (original.attachments || [])
+      .filter((a) => a.dataBase64)
+      .map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        dataBase64: a.dataBase64,
+      }));
+
+    const mergedAttachments = [...origAttachments, ...(attachments || [])];
+
+    const fromFormatted = original.from.map((f) => (f.name ? `"${f.name}" <${f.address}>` : f.address)).join(', ');
+    const toFormatted = original.to.map((t) => (t.name ? `"${t.name}" <${t.address}>` : t.address)).join(', ');
+    const ccFormatted = original.cc?.length
+      ? original.cc.map((c) => (c.name ? `"${c.name}" <${c.address}>` : c.address)).join(', ')
+      : undefined;
+
+    const forwardedHeaderText = [
+      '---------- Forwarded message ---------',
+      `From: ${fromFormatted}`,
+      `Date: ${original.date}`,
+      `Subject: ${original.subject}`,
+      `To: ${toFormatted}`,
+      ...(ccFormatted ? [`Cc: ${ccFormatted}`] : []),
+      '',
+    ].join('\n');
+
+    const bodyText = `${comment ? comment.trim() + '\n\n' : ''}${forwardedHeaderText}${original.bodyText || original.bodyMarkdown || ''}`;
+
+    let forwardHtml: string | undefined;
+    if (bodyHtml || original.bodyHtml) {
+      const commentHtml = comment ? `<div>${comment.replace(/\n/g, '<br>')}</div><br>` : '';
+      const origHtml = original.bodyHtml || (original.bodyText || '').replace(/\n/g, '<br>');
+      forwardHtml = `${commentHtml}<div class="gmail_quote"><div dir="ltr" class="gmail_attr">${forwardedHeaderText.replace(/\n/g, '<br>')}<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${origHtml}</blockquote></div>`;
+    }
+
+    const draft = await this.createDraft({
+      to,
+      subject,
+      bodyText,
+      bodyHtml: forwardHtml,
+      attachments: mergedAttachments,
+    });
+
+    return { success: true, created: true, draftId: draft.draftId, folder: draft.folder, to, subject };
   }
 
   async updateDraft(
     draftId: string,
-    options: CreateDraftOptions
-  ): Promise<{ success: boolean; updated: boolean; draftId: string; subject: string }> {
-    const imap = await this.getImap();
-    try {
-      const folder = await this.resolveSpecialFolder(imap, '\\Drafts');
-      await imap.select(folder);
+    options: Partial<CreateDraftOptions>
+  ): Promise<{ success: boolean; updated: boolean; draftId: string; subject: string; to: string; cc?: string; hasAttachments: boolean }> {
+    const existing = await this.getDraft(draftId, true);
+    const existingMsg = existing.message;
 
-      // 1. Delete old draft
-      const uid = parseInt(draftId, 10);
-      if (!isNaN(uid)) {
-        try {
-          await imap.sendCommand(`UID STORE ${uid} +FLAGS (\\Deleted)`);
-          await imap.sendCommand('EXPUNGE');
-        } catch {}
-      }
+    const to = options.to !== undefined
+      ? (Array.isArray(options.to) ? options.to.join(', ') : options.to)
+      : existingMsg.to.map((a) => (a.name ? `"${a.name}" <${a.address}>` : a.address)).join(', ');
 
-      // 2. Append updated draft
-      const created = await this.createDraft(options);
-      return { success: true, updated: true, draftId: created.draftId, subject: options.subject || '' };
-    } finally {
-      await imap.close();
+    const cc = options.cc !== undefined
+      ? (Array.isArray(options.cc) ? options.cc.join(', ') : options.cc)
+      : (existingMsg.cc?.length ? existingMsg.cc.map((a) => (a.name ? `"${a.name}" <${a.address}>` : a.address)).join(', ') : undefined);
+
+    const bcc = options.bcc !== undefined
+      ? (Array.isArray(options.bcc) ? options.bcc.join(', ') : options.bcc)
+      : (existingMsg.bcc?.length ? existingMsg.bcc.map((a) => (a.name ? `"${a.name}" <${a.address}>` : a.address)).join(', ') : undefined);
+
+    const subject = options.subject !== undefined ? options.subject : existingMsg.subject;
+    const bodyText = options.bodyText !== undefined ? options.bodyText : (existingMsg.bodyText || existingMsg.bodyMarkdown || '');
+    const bodyHtml = options.bodyHtml !== undefined ? options.bodyHtml : existingMsg.bodyHtml;
+    const inReplyTo = options.inReplyTo !== undefined ? options.inReplyTo : existingMsg.inReplyTo;
+    const references = options.references !== undefined ? options.references : existingMsg.references;
+    const threadId = options.threadId !== undefined ? options.threadId : existingMsg.threadId;
+
+    let attachments: (string | OutboundAttachment)[] | undefined = options.attachments;
+    if (attachments === undefined && existingMsg.attachments?.length) {
+      attachments = existingMsg.attachments
+        .filter((a) => a.dataBase64)
+        .map((a) => ({
+          filename: a.filename,
+          contentType: a.contentType,
+          dataBase64: a.dataBase64,
+        }));
     }
+
+    const created = await this.createDraft({
+      to,
+      cc,
+      bcc,
+      subject,
+      bodyText,
+      bodyHtml,
+      inReplyTo,
+      references,
+      threadId,
+      attachments,
+      attachEmailUids: options.attachEmailUids,
+      attachedEmails: options.attachedEmails,
+    });
+
+    try {
+      await this.deleteDraft(draftId);
+    } catch {}
+
+    return {
+      success: true,
+      updated: true,
+      draftId: created.draftId,
+      subject,
+      to,
+      cc,
+      hasAttachments: (attachments?.length ?? 0) > 0,
+    };
   }
 
   async sendDraft(draftId: string): Promise<{ success: boolean; sent: boolean; draftId: string; messageId: string }> {
-    const draft = await this.getDraft(draftId);
+    const draft = await this.getDraft(draftId, true);
     const msg = draft.message;
     const to = msg.to.map((a) => a.address);
     const cc = msg.cc?.map((a) => a.address);
     const bcc = msg.bcc?.map((a) => a.address);
+
+    const attachments: OutboundAttachment[] = (msg.attachments || [])
+      .filter((a) => a.dataBase64)
+      .map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        dataBase64: a.dataBase64,
+      }));
 
     const sent = await this.sendEmail({
       to,
@@ -785,6 +960,8 @@ export class AppPasswordGmailClient {
       bodyHtml: msg.bodyHtml,
       inReplyTo: msg.inReplyTo,
       references: msg.references,
+      threadId: msg.threadId,
+      attachments,
     });
 
     await this.deleteDraft(draftId);
@@ -806,8 +983,6 @@ export class AppPasswordGmailClient {
     }
   }
 
-  // ---------------------------------------------------------------- Outbound Sending
-
   async sendEmail(options: SendEmailOptions): Promise<{ success: boolean; messageId: string }> {
     const smtp = new SmtpConnection(this.smtpHost, this.smtpPort);
     await smtp.connect();
@@ -818,7 +993,6 @@ export class AppPasswordGmailClient {
       const ccList = options.cc ? (Array.isArray(options.cc) ? options.cc : [options.cc]) : [];
       const bccList = options.bcc ? (Array.isArray(options.bcc) ? options.bcc : [options.bcc]) : [];
 
-      // If attachEmailUids are provided, fetch their raw EML and attach them
       const attachedEmails: AttachedEmail[] = [...(options.attachedEmails || [])];
       if (options.attachEmailUids?.length) {
         for (const uid of options.attachEmailUids) {
@@ -864,14 +1038,21 @@ export class AppPasswordGmailClient {
     bodyHtml?: string,
     attachments?: (string | OutboundAttachment)[],
     attachEmailUids?: (string | number)[],
-  ): Promise<{ success: boolean; messageId: string; to: string; cc?: string; subject: string }> {
+    quoteOriginal = true,
+  ): Promise<{ success: boolean; messageId: string; to: string; cc?: string; subject: string; threadId?: string }> {
     const envelope = await this.buildReplyEnvelope(folder, uid, replyAll);
     const cc = mergeCc(envelope.cc, additionalCc);
+    const quoted = formatQuotedReply(bodyText, envelope.original, quoteOriginal, bodyHtml);
+
     const sent = await this.sendEmail({
-      ...envelope,
+      to: envelope.to,
       cc,
-      bodyText,
-      bodyHtml,
+      subject: envelope.subject,
+      bodyText: quoted.bodyText,
+      bodyHtml: quoted.bodyHtml,
+      inReplyTo: envelope.inReplyTo,
+      references: envelope.references,
+      threadId: envelope.threadId,
       attachments,
       attachEmailUids,
     });
@@ -882,6 +1063,7 @@ export class AppPasswordGmailClient {
       to: envelope.to,
       cc,
       subject: envelope.subject,
+      threadId: envelope.threadId,
     };
   }
 
@@ -893,13 +1075,15 @@ export class AppPasswordGmailClient {
     bodyHtml?: string,
     attachments?: (string | OutboundAttachment)[],
     attachAsEml = false,
-  ): Promise<{ success: boolean; messageId: string }> {
-    const original = await this.getEmailContent(folder, uid);
-    const subject = original.subject.startsWith('Fwd:') || original.subject.startsWith('Viderestil:') ? original.subject : `Fwd: ${original.subject}`;
+  ): Promise<{ success: boolean; messageId: string; subject: string }> {
+    const original = await this.getEmailContent(folder, uid, true);
+    const subject = /^\s*(fwd|fw|viderestil|vs)\s*:/i.test(original.subject)
+      ? original.subject
+      : `Fwd: ${original.subject}`;
 
     if (attachAsEml) {
       const rawResult = await this.getRawEmail(folder, uid);
-      return this.sendEmail({
+      const sent = await this.sendEmail({
         to,
         subject,
         bodyText: comment || 'Attached is the forwarded message.',
@@ -910,18 +1094,54 @@ export class AppPasswordGmailClient {
           rawEml: rawResult.raw,
         }],
       });
+      return { success: true, messageId: sent.messageId, subject };
     }
 
-    return this.sendEmail({
+    const origAttachments: OutboundAttachment[] = (original.attachments || [])
+      .filter((a) => a.dataBase64)
+      .map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        dataBase64: a.dataBase64,
+      }));
+
+    const mergedAttachments = [...origAttachments, ...(attachments || [])];
+
+    const fromFormatted = original.from.map((f) => (f.name ? `"${f.name}" <${f.address}>` : f.address)).join(', ');
+    const toFormatted = original.to.map((t) => (t.name ? `"${t.name}" <${t.address}>` : t.address)).join(', ');
+    const ccFormatted = original.cc?.length
+      ? original.cc.map((c) => (c.name ? `"${c.name}" <${c.address}>` : c.address)).join(', ')
+      : undefined;
+
+    const forwardedHeaderText = [
+      '---------- Forwarded message ---------',
+      `From: ${fromFormatted}`,
+      `Date: ${original.date}`,
+      `Subject: ${original.subject}`,
+      `To: ${toFormatted}`,
+      ...(ccFormatted ? [`Cc: ${ccFormatted}`] : []),
+      '',
+    ].join('\n');
+
+    const bodyText = `${comment ? comment.trim() + '\n\n' : ''}${forwardedHeaderText}${original.bodyText || original.bodyMarkdown || ''}`;
+
+    let forwardHtml: string | undefined;
+    if (bodyHtml || original.bodyHtml) {
+      const commentHtml = comment ? `<div>${comment.replace(/\n/g, '<br>')}</div><br>` : '';
+      const origHtml = original.bodyHtml || (original.bodyText || '').replace(/\n/g, '<br>');
+      forwardHtml = `${commentHtml}<div class="gmail_quote"><div dir="ltr" class="gmail_attr">${forwardedHeaderText.replace(/\n/g, '<br>')}<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${origHtml}</blockquote></div>`;
+    }
+
+    const sent = await this.sendEmail({
       to,
       subject,
-      bodyText: `${comment ? comment + '\n\n' : ''}---------- Forwarded message ---------\nFrom: ${original.from.map((f) => f.address).join(', ')}\nDate: ${original.date}\nSubject: ${original.subject}\n\n${original.bodyText || ''}`,
-      bodyHtml,
-      attachments,
+      bodyText,
+      bodyHtml: forwardHtml,
+      attachments: mergedAttachments,
     });
-  }
 
-  // ---------------------------------------------------------------- Labels & Triage
+    return { success: true, messageId: sent.messageId, subject };
+  }
 
   async modifyEmailLabels(folder: string, uids: number[], addLabels: string[] = [], removeLabels: string[] = []): Promise<{ success: boolean; updated: number }> {
     const imap = await this.getImap();
@@ -1034,8 +1254,6 @@ export class AppPasswordGmailClient {
       await imap.close();
     }
   }
-
-  // ---------------------------------------------------------------- MIME Composer
 
   private composeMime(options: {
     to: string;
@@ -1166,19 +1384,31 @@ export class AppPasswordGmailClient {
     folder: string,
     uid: number,
     replyAll: boolean,
-  ): Promise<{ to: string; cc?: string; subject: string; inReplyTo: string; references: string }> {
-    const original = await this.getEmailContent(folder, uid);
+  ): Promise<{ to: string; cc?: string; subject: string; inReplyTo: string; references: string; threadId?: string; original: EmailDetail }> {
+    const original = await this.getEmailContent(folder, uid, true);
 
-    const recipients = (original.replyTo?.length ? original.replyTo : original.from)
-      .map((entry) => entry.address)
+    const toRecipients = (original.replyTo?.length ? original.replyTo : original.from)
+      .map((entry) => (entry.name ? `"${entry.name}" <${entry.address}>` : entry.address))
       .filter(Boolean);
 
-    const cc = replyAll
-      ? [...(original.to ?? []), ...(original.cc ?? [])]
-          .map((entry) => entry.address)
-          .filter((address) => address && !address.toLowerCase().includes(this.email.toLowerCase()))
-          .filter((address) => !recipients.includes(address))
-      : [];
+    const toBareEmails = (original.replyTo?.length ? original.replyTo : original.from)
+      .map((entry) => extractBareEmail(entry.address));
+
+    const myBareEmail = extractBareEmail(this.email);
+
+    let ccList: string[] = [];
+    if (replyAll) {
+      const allOriginal = [...(original.to ?? []), ...(original.cc ?? [])];
+      const seen = new Set<string>();
+      for (const item of allOriginal) {
+        const bare = extractBareEmail(item.address);
+        if (!bare || bare === myBareEmail || toBareEmails.includes(bare) || seen.has(bare)) {
+          continue;
+        }
+        seen.add(bare);
+        ccList.push(item.name ? `"${item.name}" <${item.address}>` : item.address);
+      }
+    }
 
     const references = [original.references, original.messageId]
       .filter((entry): entry is string => Boolean(entry && entry.trim()))
@@ -1186,13 +1416,15 @@ export class AppPasswordGmailClient {
       .trim();
 
     return {
-      to: recipients.join(', '),
-      cc: cc.length > 0 ? cc.join(', ') : undefined,
-      subject: /^\s*(re|sv|vs|aw|antw|ref)\s*:/i.test(original.subject)
+      to: toRecipients.join(', '),
+      cc: ccList.length > 0 ? ccList.join(', ') : undefined,
+      subject: /^\s*(re|sv|vs|aw|antw|ref|odp|r)\s*:/i.test(original.subject)
         ? original.subject
         : `Re: ${original.subject}`,
       inReplyTo: original.messageId,
       references,
+      threadId: original.threadId,
+      original,
     };
   }
 
@@ -1204,8 +1436,8 @@ export class AppPasswordGmailClient {
     const replyTo = header('reply-to');
     const references = headers.references ?? '';
     const inReplyTo = headers['in-reply-to'] ?? '';
+    const contentType = headers['content-type'] ?? '';
 
-    // Extract X-GM-THRID, X-GM-MSGID, X-GM-LABELS from FETCH line if present
     const thridMatch = fetchLine.match(/X-GM-THRID (\d+)/);
     const msgIdMatch = fetchLine.match(/X-GM-MSGID (\d+)/);
     const labelsMatch = fetchLine.match(/X-GM-LABELS \((.*?)\)/);
@@ -1215,6 +1447,8 @@ export class AppPasswordGmailClient {
     const labelIds: string[] = labelsMatch
       ? labelsMatch[1].split(' ').map((l) => l.replace(/^"|"$/g, '')).filter(Boolean)
       : [];
+
+    const hasAttachments = /multipart\/mixed/i.test(contentType) || /boundary/i.test(contentType);
 
     return {
       id,
@@ -1232,7 +1466,7 @@ export class AppPasswordGmailClient {
       date: header('date'),
       snippet: '',
       labelIds,
-      hasAttachments: false,
+      hasAttachments,
     };
   }
 
@@ -1242,7 +1476,7 @@ export class AppPasswordGmailClient {
     return this.envelopeFromHeaders(parseHeaderBlock(literal), id, firstLine);
   }
 
-  private parseFullMessage(raw: string, id: string): EmailDetail {
+  private parseFullMessage(raw: string, id: string, includeAttachmentData = false): EmailDetail {
     const firstLine = raw.split('\r\n')[0] || '';
     const literal = extractFetchLiteral(raw);
     const message = parseMimeMessage(literal);
@@ -1254,7 +1488,7 @@ export class AppPasswordGmailClient {
       filename: a.filename,
       contentType: a.contentType,
       size: a.size,
-      dataBase64: a.dataBase64,
+      dataBase64: includeAttachmentData ? a.dataBase64 : undefined,
     }));
 
     return {

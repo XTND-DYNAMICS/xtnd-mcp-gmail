@@ -140,7 +140,7 @@ export class GmailClient {
   /** Reply in-thread, carrying the References chain so Gmail groups it. */
   async replyToMessage(
     messageId: string,
-    body: { bodyText: string; bodyHtml?: string; replyAll?: boolean; from?: string },
+    body: { bodyText: string; bodyHtml?: string; replyAll?: boolean; from?: string; quoteOriginal?: boolean },
   ): Promise<EmailHeaderSummary> {
     const parent = await this.getMessage(messageId, 'full');
     const threading = buildReplyHeaders({
@@ -154,16 +154,30 @@ export class GmailClient {
       ? [...(parent.to ?? []), ...(parent.cc ?? [])]
           .map((address) => address.address)
           .filter((address) => address.toLowerCase() !== this.rest.mailbox.toLowerCase())
-          .filter((address) => !recipients.includes(address))
+          .filter((address) => !recipients.map((r) => r.toLowerCase()).includes(address.toLowerCase()))
       : undefined;
+
+    let bodyText = body.bodyText;
+    let bodyHtml = body.bodyHtml;
+    if (body.quoteOriginal !== false) {
+      const senderName = formatAddresses(to) || 'Sender';
+      const attribution = `On ${parent.date || new Date().toUTCString()}, ${senderName} wrote:`;
+      const origText = parent.bodyText || parent.bodyMarkdown || '';
+      bodyText = `${body.bodyText.trim()}\n\n${attribution}\n${origText.split('\n').map((l) => `> ${l}`).join('\n')}`;
+      if (bodyHtml || parent.bodyHtml) {
+        const userHtml = bodyHtml || body.bodyText.replace(/\n/g, '<br>');
+        const origHtml = parent.bodyHtml || origText.replace(/\n/g, '<br>');
+        bodyHtml = `<div>${userHtml}</div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">${attribution.replace(/</g, '&lt;').replace(/>/g, '&gt;')}<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${origHtml}</blockquote></div>`;
+      }
+    }
 
     return this.sendMessage({
       from: body.from,
       to: recipients,
       cc: cc && cc.length > 0 ? cc : undefined,
       subject: replySubject(parent.subject),
-      bodyText: body.bodyText,
-      bodyHtml: body.bodyHtml,
+      bodyText,
+      bodyHtml,
       threadId: parent.threadId,
       ...threading,
     });
@@ -171,7 +185,7 @@ export class GmailClient {
 
   async forwardMessage(
     messageId: string,
-    options: { to: string | string[]; comment?: string; from?: string },
+    options: { to: string | string[]; comment?: string; from?: string; attachAsEml?: boolean },
   ): Promise<EmailHeaderSummary> {
     const source = await this.getMessage(messageId, 'full');
     const quoted = [
@@ -182,6 +196,7 @@ export class GmailClient {
       `Date: ${source.date}`,
       `Subject: ${source.subject}`,
       `To: ${formatAddresses(source.to)}`,
+      ...(source.cc?.length ? [`Cc: ${formatAddresses(source.cc)}`] : []),
       '',
       source.bodyText ?? source.bodyMarkdown ?? '',
     ].join('\n');
@@ -344,12 +359,76 @@ export class GmailClient {
     return { id: resource.id, message: parseMessage(resource.message) };
   }
 
-  async updateDraft(draftId: string, options: SendEmailOptions): Promise<GmailDraft> {
-    this.requireScope(GMAIL_SCOPES.compose, 'updating a draft');
+  async createReplyDraft(
+    messageId: string,
+    body: { bodyText: string; bodyHtml?: string; replyAll?: boolean; from?: string; quoteOriginal?: boolean },
+  ): Promise<GmailDraft> {
+    this.requireScope(GMAIL_SCOPES.compose, 'creating a reply draft');
+    const parent = await this.getMessage(messageId, 'full');
+    const threading = buildReplyHeaders({
+      messageId: parent.messageId,
+      references: parent.references,
+    });
 
-    const attachedEmails: AttachedEmail[] = [...(options.attachedEmails || [])];
-    if (options.attachEmailUids?.length) {
-      for (const id of options.attachEmailUids) {
+    const to = parent.replyTo?.length ? parent.replyTo : parent.from;
+    const recipients = to.map((address) => address.address);
+    const cc = body.replyAll
+      ? [...(parent.to ?? []), ...(parent.cc ?? [])]
+          .map((address) => address.address)
+          .filter((address) => address.toLowerCase() !== this.rest.mailbox.toLowerCase())
+          .filter((address) => !recipients.map((r) => r.toLowerCase()).includes(address.toLowerCase()))
+      : undefined;
+
+    let bodyText = body.bodyText;
+    let bodyHtml = body.bodyHtml;
+    if (body.quoteOriginal !== false) {
+      const senderName = formatAddresses(to) || 'Sender';
+      const attribution = `On ${parent.date || new Date().toUTCString()}, ${senderName} wrote:`;
+      const origText = parent.bodyText || parent.bodyMarkdown || '';
+      bodyText = `${body.bodyText.trim()}\n\n${attribution}\n${origText.split('\n').map((l) => `> ${l}`).join('\n')}`;
+      if (bodyHtml || parent.bodyHtml) {
+        const userHtml = bodyHtml || body.bodyText.replace(/\n/g, '<br>');
+        const origHtml = parent.bodyHtml || origText.replace(/\n/g, '<br>');
+        bodyHtml = `<div>${userHtml}</div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">${attribution.replace(/</g, '&lt;').replace(/>/g, '&gt;')}<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${origHtml}</blockquote></div>`;
+      }
+    }
+
+    return this.createDraft({
+      from: body.from,
+      to: recipients,
+      cc: cc && cc.length > 0 ? cc : undefined,
+      subject: replySubject(parent.subject),
+      bodyText,
+      bodyHtml,
+      threadId: parent.threadId,
+      ...threading,
+    });
+  }
+
+  async updateDraft(draftId: string, options: Partial<SendEmailOptions>): Promise<GmailDraft> {
+    this.requireScope(GMAIL_SCOPES.compose, 'updating a draft');
+    const existing = await this.getDraft(draftId);
+    const existingMsg = existing.message;
+
+    const mergedOptions: SendEmailOptions = {
+      from: options.from ?? (existingMsg.from?.[0]?.address || this.rest.mailbox),
+      to: options.to ?? existingMsg.to.map((a) => a.address),
+      cc: options.cc ?? (existingMsg.cc?.map((a) => a.address) || undefined),
+      bcc: options.bcc ?? (existingMsg.bcc?.map((a) => a.address) || undefined),
+      subject: options.subject ?? existingMsg.subject,
+      bodyText: options.bodyText ?? (existingMsg.bodyText || existingMsg.bodyMarkdown || ''),
+      bodyHtml: options.bodyHtml ?? existingMsg.bodyHtml,
+      inReplyTo: options.inReplyTo ?? existingMsg.inReplyTo,
+      references: options.references ?? existingMsg.references,
+      threadId: options.threadId ?? existingMsg.threadId,
+      attachments: options.attachments,
+      attachedEmails: options.attachedEmails,
+      attachEmailUids: options.attachEmailUids,
+    };
+
+    const attachedEmails: AttachedEmail[] = [...(mergedOptions.attachedEmails || [])];
+    if (mergedOptions.attachEmailUids?.length) {
+      for (const id of mergedOptions.attachEmailUids) {
         try {
           const rawMsg = await this.getMessage(String(id), 'raw');
           if (rawMsg.raw) {
@@ -362,10 +441,10 @@ export class GmailClient {
       }
     }
 
-    const raw = toGmailRaw(composeMimeMessage({ ...options, attachedEmails }, this.rest.mailbox));
+    const raw = toGmailRaw(composeMimeMessage({ ...mergedOptions, attachedEmails }, this.rest.mailbox));
     const resource = await this.rest.request<{ id: string; message: GmailMessageResource }>(
       `/users/me/drafts/${encodeURIComponent(draftId)}`,
-      { method: 'PUT', body: { message: { raw, threadId: options.threadId } } },
+      { method: 'PUT', body: { message: { raw, threadId: mergedOptions.threadId } } },
     );
     return { id: resource.id, message: parseMessage(resource.message) };
   }

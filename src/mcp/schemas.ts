@@ -116,6 +116,18 @@ export const ReplyMessageSchema = z.object({
   bodyHtml: BodyHtml.optional().describe('Optional HTML reply body'),
   replyAll: z.boolean().optional().default(false).describe('Include every original recipient'),
   from: HeaderValue.optional().describe('Send-as alias to reply from'),
+  quoteOriginal: z.boolean().optional().default(true).describe('Automatically quote the original message below the reply'),
+  attachments: Attachments.optional().describe('Optional files to attach'),
+  attachEmailIds: z.array(ResourceId).optional().describe('Email message IDs to attach as .eml attachments'),
+}).strict();
+
+export const CreateReplyDraftSchema = z.object({
+  messageId: ResourceId.describe('Gmail message ID being replied to'),
+  bodyText: BodyText.describe('Reply draft body text'),
+  bodyHtml: BodyHtml.optional().describe('Optional HTML reply draft body'),
+  replyAll: z.boolean().optional().default(false).describe('Include every original recipient in Cc'),
+  from: HeaderValue.optional().describe('Send-as alias to draft reply from'),
+  quoteOriginal: z.boolean().optional().default(true).describe('Automatically quote the original message below the reply'),
   attachments: Attachments.optional().describe('Optional files to attach'),
   attachEmailIds: z.array(ResourceId).optional().describe('Email message IDs to attach as .eml attachments'),
 }).strict();

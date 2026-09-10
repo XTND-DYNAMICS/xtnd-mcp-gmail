@@ -58,15 +58,16 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'get_email',
-    'Fetch full email content by ID/UID from Gmail, including markdown body, HTML, headers, and attachments list.',
+    'Fetch full email content by ID/UID from Gmail. Returns markdown body, HTML, headers, and attachment metadata (without heavy binary payloads by default).',
     {
       folder: z.string().optional().default('INBOX').describe('Mailbox folder (default: INBOX)'),
       id: z.string().describe('ID or UID of the email'),
+      includeAttachmentData: z.boolean().optional().default(false).describe('If true, returns base64 attachment payloads. Default false avoids token context bloat.'),
     },
-    async ({ folder, id }) => {
+    async ({ folder, id, includeAttachmentData }) => {
       try {
         const uid = parseInt(id, 10);
-        const email = await getClient().getEmailContent(folder, isNaN(uid) ? 1 : uid);
+        const email = await getClient().getEmailContent(folder, isNaN(uid) ? 1 : uid, includeAttachmentData);
         return { content: [{ type: 'text', text: JSON.stringify(email, null, 2) }] };
       } catch (err: any) {
         return { isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] };
@@ -80,10 +81,11 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
     {
       folder: z.string().optional().default('INBOX').describe('Mailbox folder (default: INBOX)'),
       id: z.string().describe('Email ID, UID, or Thread ID'),
+      includeAttachmentData: z.boolean().optional().default(false).describe('If true, includes base64 attachment data in messages.'),
     },
-    async ({ folder, id }) => {
+    async ({ folder, id, includeAttachmentData }) => {
       try {
-        const thread = await getClient().getEmailThread(folder, id);
+        const thread = await getClient().getEmailThread(folder, id, includeAttachmentData);
         return { content: [{ type: 'text', text: JSON.stringify(thread, null, 2) }] };
       } catch (err: any) {
         return { isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] };
@@ -178,18 +180,19 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'reply_email',
-    'Reply in-thread to an existing email in Gmail. Derives recipients, subject, and threading headers.',
+    'Reply in-thread to an existing email in Gmail. Derives recipients, subject, threading headers, and automatically quotes the original message.',
     {
       folder: z.string().optional().default('INBOX').describe('Mailbox folder (default: INBOX)'),
       id: z.string().describe('ID or UID of the email being replied to'),
       bodyText: z.string().describe('Reply text'),
       bodyHtml: z.string().optional().describe('Optional HTML reply text'),
-      replyAll: z.boolean().optional().default(false).describe('Keep everyone already on the thread in Cc'),
+      replyAll: z.boolean().optional().default(false).describe('Keep everyone already on the thread in Cc (excluding this mailbox)'),
       additionalCc: z.string().optional().describe('Extra Cc addresses to include'),
+      quoteOriginal: z.boolean().optional().default(true).describe('Automatically format and quote original email below reply'),
       attachments: z.array(z.string()).optional().describe('Optional file paths to attach'),
       attachEmailUids: z.array(z.string()).optional().describe('Optional email IDs/UIDs to attach as .eml'),
     },
-    async ({ folder, id, bodyText, bodyHtml, replyAll, additionalCc, attachments, attachEmailUids }) => {
+    async ({ folder, id, bodyText, bodyHtml, replyAll, additionalCc, quoteOriginal, attachments, attachEmailUids }) => {
       try {
         const uid = parseInt(id, 10);
         const result = await getClient().replyEmail(
@@ -201,6 +204,7 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
           bodyHtml,
           attachments,
           attachEmailUids,
+          quoteOriginal,
         );
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err: any) {
@@ -211,7 +215,7 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'forward_email',
-    'Forward an existing email to new recipients. Supports forwarding inline or as an attached .eml file.',
+    'Forward an existing email to new recipients with original text, headers, and attachments intact.',
     {
       folder: z.string().optional().default('INBOX').describe('Mailbox folder (default: INBOX)'),
       id: z.string().describe('ID or UID of the email to forward'),
@@ -219,7 +223,7 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
       comment: z.string().optional().describe('Optional note prepended above the forwarded email'),
       bodyHtml: z.string().optional().describe('Optional HTML body'),
       attachments: z.array(z.string()).optional().describe('Optional additional file paths to attach'),
-      attachAsEml: z.boolean().optional().default(false).describe('If true, attach the original email as a full .eml attachment'),
+      attachAsEml: z.boolean().optional().default(false).describe('If true, attach the original email as a full .eml attachment; if false, forwards inline with all original attachments preserved'),
     },
     async ({ folder, id, to, comment, bodyHtml, attachments, attachAsEml }) => {
       try {
@@ -267,18 +271,19 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'create_reply_draft',
-    'Save a reply to an existing email as a draft in Gmail. Recipients, subject, and threading headers are preserved.',
+    'Save a reply to an existing email as a draft in Gmail. Preserves recipients (Reply-To / From, and Cc on Reply All), subject (Re: ...), In-Reply-To/References threading headers, and quotes the original message.',
     {
       folder: z.string().optional().default('INBOX').describe('Mailbox folder (default: INBOX)'),
       id: z.string().describe('ID or UID of the email being replied to'),
       bodyText: z.string().describe('The reply body'),
-      replyAll: z.boolean().default(false).describe('Keep everyone already on the thread in Cc'),
+      replyAll: z.boolean().default(false).describe('Keep everyone already on the thread in Cc (excluding this mailbox)'),
       additionalCc: z.string().optional().describe('Extra Cc addresses to include'),
+      quoteOriginal: z.boolean().optional().default(true).describe('Automatically format and quote original message below reply'),
       bodyHtml: z.string().optional().describe('Optional HTML body (for tables and styled layout)'),
       attachments: z.array(z.string()).optional().describe('Absolute file paths to attach'),
       attachEmailUids: z.array(z.string()).optional().describe('Email IDs/UIDs to attach as .eml'),
     },
-    async ({ folder, id, bodyText, replyAll, additionalCc, bodyHtml, attachments, attachEmailUids }) => {
+    async ({ folder, id, bodyText, replyAll, additionalCc, quoteOriginal, bodyHtml, attachments, attachEmailUids }) => {
       try {
         const uid = parseInt(id, 10);
         const result = await getClient().createReplyDraft(
@@ -290,6 +295,38 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
           bodyHtml,
           attachments,
           attachEmailUids,
+          quoteOriginal,
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (err: any) {
+        return { isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] };
+      }
+    }
+  );
+
+  server.tool(
+    'create_forward_draft',
+    'Save a forwarded email as a draft in Gmail Drafts folder for review before sending. Preserves original headers and attachments.',
+    {
+      folder: z.string().optional().default('INBOX').describe('Mailbox folder (default: INBOX)'),
+      id: z.string().describe('ID or UID of the email to forward'),
+      to: z.string().describe('Recipient email address'),
+      comment: z.string().optional().describe('Optional note prepended above the forwarded email'),
+      bodyHtml: z.string().optional().describe('Optional HTML body'),
+      attachments: z.array(z.string()).optional().describe('Optional additional file paths to attach'),
+      attachAsEml: z.boolean().optional().default(false).describe('If true, attach the original email as a full .eml attachment; if false, forwards inline with all original attachments preserved'),
+    },
+    async ({ folder, id, to, comment, bodyHtml, attachments, attachAsEml }) => {
+      try {
+        const uid = parseInt(id, 10);
+        const result = await getClient().createForwardDraft(
+          folder,
+          isNaN(uid) ? 1 : uid,
+          to,
+          comment,
+          bodyHtml,
+          attachments,
+          attachAsEml,
         );
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err: any) {
@@ -300,7 +337,7 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'update_draft',
-    'Update an existing draft in Gmail Drafts folder, replacing its content, recipients, or attachments.',
+    'Update an existing draft in Gmail Drafts folder. Safely updates text, recipients, or subject while preserving threading headers and existing attachments unless explicitly replaced.',
     {
       draftId: z.string().describe('Draft ID/UID to update'),
       to: z.string().optional().describe('Recipient address(es)'),
@@ -309,7 +346,7 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
       subject: z.string().optional().describe('Subject line'),
       bodyText: z.string().optional().describe('Plain text body'),
       bodyHtml: z.string().optional().describe('HTML body'),
-      attachments: z.array(z.string()).optional().describe('Absolute file paths to attach'),
+      attachments: z.array(z.string()).optional().describe('Absolute file paths to attach (omit to preserve existing attachments)'),
       attachEmailUids: z.array(z.string()).optional().describe('Email IDs/UIDs to attach as .eml'),
     },
     async ({ draftId, ...rest }) => {
@@ -324,13 +361,14 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'list_drafts',
-    'List all email drafts in the Gmail Drafts folder.',
+    'List all email drafts in the Gmail Drafts folder with accurate attachment metadata and subject/recipients.',
     {
       limit: z.number().optional().default(20).describe('Maximum number of drafts to return'),
+      includeAttachmentData: z.boolean().optional().default(false).describe('If true, includes base64 attachment data.'),
     },
-    async ({ limit }) => {
+    async ({ limit, includeAttachmentData }) => {
       try {
-        const result = await getClient().listDrafts(limit);
+        const result = await getClient().listDrafts(limit, includeAttachmentData);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err: any) {
         return { isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] };
@@ -340,13 +378,14 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'get_draft',
-    'Fetch one draft by ID/UID including full body, headers, and attachment information.',
+    'Fetch one draft by ID/UID including full body, headers, and attachment metadata.',
     {
       draftId: z.string().describe('Draft ID/UID'),
+      includeAttachmentData: z.boolean().optional().default(false).describe('If true, includes base64 attachment payloads.'),
     },
-    async ({ draftId }) => {
+    async ({ draftId, includeAttachmentData }) => {
       try {
-        const result = await getClient().getDraft(draftId);
+        const result = await getClient().getDraft(draftId, includeAttachmentData);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (err: any) {
         return { isError: true, content: [{ type: 'text', text: `Error: ${err.message}` }] };
@@ -356,7 +395,7 @@ export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmai
 
   server.tool(
     'send_draft',
-    'Send an existing draft immediately and remove it from the Gmail Drafts folder.',
+    'Send an existing draft immediately (including all attached files) and remove it from the Gmail Drafts folder.',
     {
       draftId: z.string().describe('Draft ID/UID to send'),
     },
