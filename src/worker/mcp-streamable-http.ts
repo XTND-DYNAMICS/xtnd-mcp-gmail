@@ -2,21 +2,29 @@ import { AppPasswordGmailClient } from '../core/app-password-client.js';
 import { truncateForAI } from '../core/parser/markdown.js';
 import type { GmailAppPasswordCredentials } from '../types.js';
 import {
+  ArchiveEmailDirectSchema,
   CreateDraftSchema,
   CreateFolderSchema,
+  DeleteDraftDirectSchema,
   DeleteEmailsSchema,
   DeleteFolderSchema,
   ForwardEmailSchema,
+  GetDraftDirectSchema,
   GetEmailContentSchema,
   GetEmailThreadSchema,
   GetRecentEmailsSchema,
+  ListDraftsDirectSchema,
   ListFoldersSchema,
   MarkEmailsSchema,
   MoveEmailsSchema,
   RenameFolderSchema,
   ReplyEmailSchema,
   SearchEmailsSchema,
+  SendDraftDirectSchema,
   SendEmailSchema,
+  StarEmailDirectSchema,
+  UntrashEmailDirectSchema,
+  UpdateDraftDirectSchema,
 } from '../mcp/schemas.js';
 import { z } from 'zod';
 import { readRequestJson, RequestBodyTooLargeError } from './request-body.js';
@@ -47,6 +55,14 @@ const TOOL_SCHEMAS = {
   reply_email: ReplyEmailSchema,
   forward_email: ForwardEmailSchema,
   create_draft: CreateDraftSchema,
+  update_draft: UpdateDraftDirectSchema,
+  list_drafts: ListDraftsDirectSchema,
+  get_draft: GetDraftDirectSchema,
+  send_draft: SendDraftDirectSchema,
+  delete_draft: DeleteDraftDirectSchema,
+  archive_email: ArchiveEmailDirectSchema,
+  star_email: StarEmailDirectSchema,
+  untrash_email: UntrashEmailDirectSchema,
 } as const;
 
 type ToolName = keyof typeof TOOL_SCHEMAS;
@@ -521,10 +537,19 @@ function mcpScopeError(id: unknown, requiredScope: string): Response {
 }
 
 function requiredScopeForTool(toolName: ToolName): string {
-  if (toolName === 'send_email' || toolName === 'reply_email' || toolName === 'forward_email') {
+  if (
+    toolName === 'send_email'
+    || toolName === 'reply_email'
+    || toolName === 'forward_email'
+    || toolName === 'send_draft'
+  ) {
     return 'mail.send';
   }
-  if (toolName === 'delete_emails' || toolName === 'delete_folder') {
+  if (
+    toolName === 'delete_emails'
+    || toolName === 'delete_folder'
+    || toolName === 'delete_draft'
+  ) {
     return 'mail.delete';
   }
   if (
@@ -533,6 +558,10 @@ function requiredScopeForTool(toolName: ToolName): string {
     || toolName === 'mark_emails'
     || toolName === 'move_emails'
     || toolName === 'create_draft'
+    || toolName === 'update_draft'
+    || toolName === 'archive_email'
+    || toolName === 'star_email'
+    || toolName === 'untrash_email'
   ) {
     return 'mail.manage';
   }
@@ -568,42 +597,42 @@ function getToolDefinitions() {
   return [
     {
       name: 'list_folders',
-      description: 'List all mailboxes/folders in the one.com mail account with message and unread counts.',
+      description: 'List all mailboxes/labels in the Gmail account with message and unread counts.',
       inputSchema: { type: 'object', properties: {} },
     },
     {
       name: 'create_folder',
-      description: 'Create a new folder or mailbox in the one.com mail account.',
+      description: 'Create a new folder or label in the Gmail account.',
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string', description: 'Folder name to create' } },
+        properties: { name: { type: 'string', description: 'Label name to create' } },
         required: ['name'],
       },
     },
     {
       name: 'rename_folder',
-      description: 'Rename an existing mailbox/folder.',
+      description: 'Rename an existing label/folder in Gmail.',
       inputSchema: {
         type: 'object',
         properties: {
-          oldName: { type: 'string', description: 'Current folder name' },
-          newName: { type: 'string', description: 'New folder name' },
+          oldName: { type: 'string', description: 'Current label name' },
+          newName: { type: 'string', description: 'New label name' },
         },
         required: ['oldName', 'newName'],
       },
     },
     {
       name: 'delete_folder',
-      description: 'Delete a folder/mailbox from the one.com mail account.',
+      description: 'Delete a label from the Gmail account.',
       inputSchema: {
         type: 'object',
-        properties: { name: { type: 'string', description: 'Folder name to delete' } },
+        properties: { name: { type: 'string', description: 'Label name to delete' } },
         required: ['name'],
       },
     },
     {
       name: 'search_emails',
-      description: 'Search for emails in one.com mailbox using filters (query, folder, sender, recipient, flags).',
+      description: 'Search for emails in Gmail using native query syntax (is:unread, has:attachment, newer_than:7d) or filters.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -619,7 +648,7 @@ function getToolDefinitions() {
     },
     {
       name: 'get_recent_emails',
-      description: 'Retrieve the most recent emails from a mailbox folder with envelopes.',
+      description: 'Retrieve the most recent emails from a Gmail folder with summaries.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -630,7 +659,7 @@ function getToolDefinitions() {
     },
     {
       name: 'get_email_content',
-      description: 'Fetch full email content by UID from a folder. Body is converted to clean Markdown.',
+      description: 'Fetch full email content by UID from Gmail. Body is converted to clean Markdown.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -642,7 +671,7 @@ function getToolDefinitions() {
     },
     {
       name: 'get_email_thread',
-      description: 'Retrieve the full conversation thread for a given email UID or Message-ID.',
+      description: 'Retrieve the full conversation thread for a given email UID or thread ID.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -654,7 +683,7 @@ function getToolDefinitions() {
     },
     {
       name: 'mark_emails',
-      description: 'Mark emails as read, unread, flagged, or unflagged.',
+      description: 'Mark emails as read, unread, flagged/starred, or unflagged.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -680,7 +709,7 @@ function getToolDefinitions() {
     },
     {
       name: 'delete_emails',
-      description: 'Delete emails by moving them to Trash (soft delete) or permanent expunge.',
+      description: 'Delete emails by moving them to Gmail Trash or permanent expunge.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -693,7 +722,7 @@ function getToolDefinitions() {
     },
     {
       name: 'send_email',
-      description: 'Send a new outbound email via one.com SMTP server (send.one.com:465).',
+      description: 'Send a new outbound email via Gmail SMTP (smtp.gmail.com:465).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -735,7 +764,7 @@ function getToolDefinitions() {
     },
     {
       name: 'create_draft',
-      description: 'Create an email draft in the one.com Drafts folder without sending.',
+      description: 'Create an email draft in the Gmail Drafts folder without sending.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -744,6 +773,100 @@ function getToolDefinitions() {
           bodyText: { type: 'string' },
         },
         required: ['to', 'subject', 'bodyText'],
+      },
+    },
+    {
+      name: 'update_draft',
+      description: 'Update an existing draft in the Gmail Drafts folder.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          draftId: { type: 'string' },
+          to: { type: 'string' },
+          subject: { type: 'string' },
+          bodyText: { type: 'string' },
+          bodyHtml: { type: 'string' },
+        },
+        required: ['draftId'],
+      },
+    },
+    {
+      name: 'list_drafts',
+      description: 'List all email drafts in the Gmail Drafts folder.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', default: 20 },
+        },
+      },
+    },
+    {
+      name: 'get_draft',
+      description: 'Fetch full content of a draft by draftId.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          draftId: { type: 'string' },
+        },
+        required: ['draftId'],
+      },
+    },
+    {
+      name: 'send_draft',
+      description: 'Send an existing draft immediately and remove it from Drafts.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          draftId: { type: 'string' },
+        },
+        required: ['draftId'],
+      },
+    },
+    {
+      name: 'delete_draft',
+      description: 'Permanently delete a draft from the Gmail Drafts folder.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          draftId: { type: 'string' },
+        },
+        required: ['draftId'],
+      },
+    },
+    {
+      name: 'archive_email',
+      description: 'Archive an email by removing it from INBOX.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          folder: { type: 'string', default: 'INBOX' },
+          id: { type: 'string' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'star_email',
+      description: 'Star or unstar an email in Gmail.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          folder: { type: 'string', default: 'INBOX' },
+          id: { type: 'string' },
+          star: { type: 'boolean', default: true },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'untrash_email',
+      description: 'Restore an email from Trash back to INBOX.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+        },
+        required: ['id'],
       },
     },
   ];
@@ -817,6 +940,28 @@ async function executeTool(client: AppPasswordGmailClient, call: ValidatedToolCa
         subject: call.args.subject,
         bodyText: call.args.bodyText,
       });
+    }
+    case 'update_draft':
+      return await client.updateDraft(call.args.draftId, call.args as any);
+    case 'list_drafts':
+      return await client.listDrafts(call.args.limit);
+    case 'get_draft':
+      return await client.getDraft(call.args.draftId);
+    case 'send_draft':
+      return await client.sendDraft(call.args.draftId);
+    case 'delete_draft':
+      return await client.deleteDraft(call.args.draftId);
+    case 'archive_email': {
+      const uid = parseInt(call.args.id, 10);
+      return await client.archiveEmail(call.args.folder, isNaN(uid) ? [1] : [uid]);
+    }
+    case 'star_email': {
+      const uid = parseInt(call.args.id, 10);
+      return await client.starEmail(call.args.folder, isNaN(uid) ? [1] : [uid], call.args.star);
+    }
+    case 'untrash_email': {
+      const uid = parseInt(call.args.id, 10);
+      return await client.untrashEmail(isNaN(uid) ? [1] : [uid]);
     }
   }
 }

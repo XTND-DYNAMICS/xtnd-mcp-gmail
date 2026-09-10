@@ -37,10 +37,14 @@ const Limit = z.number().int().min(1).max(500);
 const Attachment = z.object({
   filename: withoutControls(z.string().min(1).max(255)),
   contentType: withoutControls(z.string().min(1).max(255)).optional(),
-  dataBase64: z.string().max(35_000_000),
+  dataBase64: z.string().max(35_000_000).optional(),
+  filePath: z.string().max(4_096).optional(),
 }).strict();
 
-const Attachments = z.array(Attachment).max(25);
+const Attachments = z.union([
+  z.array(Attachment).max(25),
+  z.array(z.string().max(4_096)).max(25),
+]);
 
 // ------------------------------------------------------------------ account
 
@@ -102,7 +106,8 @@ export const SendMessageSchema = z.object({
   cc: Recipient.optional().describe('Optional CC recipient(s)'),
   bcc: Recipient.optional().describe('Optional BCC recipient(s)'),
   from: HeaderValue.optional().describe('Send-as alias. Must be a verified alias on the account.'),
-  attachments: Attachments.optional().describe('Files to attach, base64 encoded'),
+  attachments: Attachments.optional().describe('Files to attach (file paths or base64 objects)'),
+  attachEmailIds: z.array(ResourceId).optional().describe('Email message IDs to attach as .eml attachments'),
 }).strict();
 
 export const ReplyMessageSchema = z.object({
@@ -111,6 +116,8 @@ export const ReplyMessageSchema = z.object({
   bodyHtml: BodyHtml.optional().describe('Optional HTML reply body'),
   replyAll: z.boolean().optional().default(false).describe('Include every original recipient'),
   from: HeaderValue.optional().describe('Send-as alias to reply from'),
+  attachments: Attachments.optional().describe('Optional files to attach'),
+  attachEmailIds: z.array(ResourceId).optional().describe('Email message IDs to attach as .eml attachments'),
 }).strict();
 
 export const ForwardMessageSchema = z.object({
@@ -118,20 +125,23 @@ export const ForwardMessageSchema = z.object({
   to: Recipient.describe('Recipient(s) to forward to'),
   comment: BodyText.optional().describe('Optional note prepended above the forwarded message'),
   from: HeaderValue.optional().describe('Send-as alias to forward from'),
+  attachments: Attachments.optional().describe('Optional files to attach'),
+  attachAsEml: z.boolean().optional().default(false).describe('If true, attach the original message as a full .eml file'),
 }).strict();
 
 // ------------------------------------------------------------------- drafts
 
 export const CreateDraftSchema = z.object({
-  to: Recipient.describe('Recipient email address or list of addresses'),
-  subject: SubjectText.describe('Email subject line'),
-  bodyText: BodyText.describe('Draft body text'),
+  to: Recipient.optional().describe('Recipient email address or list of addresses'),
+  subject: SubjectText.optional().describe('Email subject line'),
+  bodyText: BodyText.optional().default('').describe('Draft body text'),
   bodyHtml: BodyHtml.optional().describe('Optional HTML draft body'),
   cc: Recipient.optional().describe('Optional CC recipient(s)'),
   bcc: Recipient.optional().describe('Optional BCC recipient(s)'),
   from: HeaderValue.optional().describe('Send-as alias the draft will be sent from'),
   threadId: ResourceId.optional().describe('Attach the draft to an existing thread'),
-  attachments: Attachments.optional().describe('Files to attach, base64 encoded'),
+  attachments: Attachments.optional().describe('Files to attach (file paths or base64 objects)'),
+  attachEmailIds: z.array(ResourceId).optional().describe('Email message IDs to attach as .eml attachments'),
 }).strict();
 
 export const UpdateDraftSchema = CreateDraftSchema.extend({
@@ -352,4 +362,37 @@ export const ForwardEmailSchema = z.object({
   uid: z.number(),
   to: z.string(),
   comment: z.string().optional(),
+});
+export const UpdateDraftDirectSchema = z.object({
+  draftId: z.string(),
+  to: z.string().optional(),
+  cc: z.string().optional(),
+  bcc: z.string().optional(),
+  subject: z.string().optional(),
+  bodyText: z.string().optional(),
+  bodyHtml: z.string().optional(),
+});
+export const ListDraftsDirectSchema = z.object({
+  limit: z.number().optional().default(20),
+});
+export const GetDraftDirectSchema = z.object({
+  draftId: z.string(),
+});
+export const SendDraftDirectSchema = z.object({
+  draftId: z.string(),
+});
+export const DeleteDraftDirectSchema = z.object({
+  draftId: z.string(),
+});
+export const ArchiveEmailDirectSchema = z.object({
+  folder: z.string().optional().default('INBOX'),
+  id: z.string(),
+});
+export const StarEmailDirectSchema = z.object({
+  folder: z.string().optional().default('INBOX'),
+  id: z.string(),
+  star: z.boolean().default(true),
+});
+export const UntrashEmailDirectSchema = z.object({
+  id: z.string(),
 });

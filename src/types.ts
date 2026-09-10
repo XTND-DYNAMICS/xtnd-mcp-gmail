@@ -130,7 +130,13 @@ export interface PagedResult<T> {
 export interface OutboundAttachment {
   filename: string;
   contentType?: string;
-  dataBase64: string;
+  dataBase64?: string;
+  filePath?: string;
+}
+
+export interface AttachedEmail {
+  filename?: string;
+  rawEml: string;
 }
 
 export interface SendEmailOptions {
@@ -139,12 +145,34 @@ export interface SendEmailOptions {
   cc?: string[] | string;
   bcc?: string[] | string;
   subject: string;
-  bodyText: string;
+  bodyText?: string;
   bodyHtml?: string;
   inReplyTo?: string;
   references?: string;
   threadId?: string;
-  attachments?: OutboundAttachment[];
+  attachments?: (string | OutboundAttachment)[];
+  attachEmailUids?: (string | number)[];
+  attachedEmails?: AttachedEmail[];
+}
+
+export interface CreateDraftOptions {
+  from?: string;
+  to?: string[] | string;
+  cc?: string[] | string;
+  bcc?: string[] | string;
+  subject?: string;
+  bodyText?: string;
+  bodyHtml?: string;
+  inReplyTo?: string;
+  references?: string;
+  threadId?: string;
+  attachments?: (string | OutboundAttachment)[];
+  attachEmailUids?: (string | number)[];
+  attachedEmails?: AttachedEmail[];
+}
+
+export interface UpdateDraftOptions extends CreateDraftOptions {
+  draftId: string;
 }
 
 export interface ModifyLabelsOptions {

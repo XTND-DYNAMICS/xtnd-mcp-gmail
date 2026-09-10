@@ -12,6 +12,8 @@
  *    one. It only sets the threading headers the caller supplies.
  */
 
+import { readFileSync } from 'node:fs';
+import { basename, extname } from 'node:path';
 import {
   assertNoHeaderControls,
   canonicalBase64,
@@ -22,22 +24,64 @@ import {
   validatedMessageId,
   validatedReferences,
 } from './headers.js';
-import type { SendEmailOptions } from '../../types.js';
+import type { SendEmailOptions, OutboundAttachment, AttachedEmail } from '../../types.js';
 
 const USER_AGENT = 'xtnd-mcp-gmail/0.1.0';
+
+function mediaTypeFor(name: string): string {
+  const types: Record<string, string> = {
+    '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+    '.txt': 'text/plain', '.csv': 'text/csv', '.html': 'text/html',
+    '.json': 'application/json', '.zip': 'application/zip',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.eml': 'message/rfc822',
+  };
+  return types[extname(name).toLowerCase()] ?? 'application/octet-stream';
+}
+
+function normalizeAttachment(item: string | OutboundAttachment): { filename: string; contentType: string; dataBase64: string } {
+  if (typeof item === 'string') {
+    const data = readFileSync(item);
+    const filename = basename(item);
+    return {
+      filename,
+      contentType: mediaTypeFor(filename),
+      dataBase64: data.toString('base64'),
+    };
+  }
+
+  if (item.filePath) {
+    const data = readFileSync(item.filePath);
+    const filename = item.filename || basename(item.filePath);
+    return {
+      filename,
+      contentType: item.contentType || mediaTypeFor(filename),
+      dataBase64: data.toString('base64'),
+    };
+  }
+
+  return {
+    filename: item.filename,
+    contentType: item.contentType || mediaTypeFor(item.filename),
+    dataBase64: item.dataBase64 || '',
+  };
+}
 
 /** Build the RFC 5322 message text for a Gmail send, draft, or insert. */
 export function composeMimeMessage(options: SendEmailOptions, senderEmail: string): string {
   const authenticatedSender = parseMailbox(senderEmail, 'Authenticated sender');
   const from = validatedMailboxHeader(options.from || authenticatedSender, 'From');
-  const toList = mailboxHeaderList(options.to, 'To');
+  const toList = options.to ? mailboxHeaderList(options.to, 'To') : '';
   const ccList = options.cc ? mailboxHeaderList(options.cc, 'Cc') : undefined;
   const bccList = options.bcc ? mailboxHeaderList(options.bcc, 'Bcc') : undefined;
-  const subject = assertNoHeaderControls(options.subject, 'Subject');
+  const subject = assertNoHeaderControls(options.subject || '', 'Subject');
+  const bodyText = options.bodyText || '';
 
   const headers: string[] = [
     `From: ${from}`,
-    `To: ${toList}`,
+    ...(toList ? [`To: ${toList}`] : []),
     `Subject: =?UTF-8?B?${utf8Base64(subject)}?=`,
     `Date: ${new Date().toUTCString()}`,
     'MIME-Version: 1.0',
@@ -53,14 +97,16 @@ export function composeMimeMessage(options: SendEmailOptions, senderEmail: strin
     headers.push(`References: ${validatedReferences(options.references)}`);
   }
 
-  const attachments = options.attachments ?? [];
-  const hasAttachments = attachments.length > 0;
+  const rawAttachments = options.attachments ?? [];
+  const normalizedAttachments = rawAttachments.map(normalizeAttachment);
+  const attachedEmails = options.attachedEmails ?? [];
+  const hasAttachments = normalizedAttachments.length > 0 || attachedEmails.length > 0;
   const hasHtml = Boolean(options.bodyHtml);
 
   if (!hasAttachments && !hasHtml) {
     headers.push('Content-Type: text/plain; charset=UTF-8');
     headers.push('Content-Transfer-Encoding: 8bit');
-    return `${headers.join('\r\n')}\r\n\r\n${options.bodyText}\r\n`;
+    return `${headers.join('\r\n')}\r\n\r\n${bodyText}\r\n`;
   }
 
   const mixedBoundary = `====_Mixed_${randomToken()}_====`;
@@ -75,7 +121,7 @@ export function composeMimeMessage(options: SendEmailOptions, senderEmail: strin
       'Content-Type: text/plain; charset=UTF-8',
       'Content-Transfer-Encoding: 8bit',
       '',
-      options.bodyText,
+      bodyText,
       '',
       `--${altBoundary}`,
       'Content-Type: text/html; charset=UTF-8',
@@ -100,7 +146,7 @@ export function composeMimeMessage(options: SendEmailOptions, senderEmail: strin
       'Content-Type: text/plain; charset=UTF-8',
       'Content-Transfer-Encoding: 8bit',
       '',
-      options.bodyText,
+      bodyText,
       '',
       `--${altBoundary}`,
       'Content-Type: text/html; charset=UTF-8',
@@ -115,13 +161,11 @@ export function composeMimeMessage(options: SendEmailOptions, senderEmail: strin
       'Content-Type: text/plain; charset=UTF-8',
       'Content-Transfer-Encoding: 8bit',
       '',
-      options.bodyText,
+      bodyText,
     );
   }
 
-  for (const attachment of attachments) {
-    // Gmail does not sniff attachment types, so an unspecified one has to fall
-    // back to the generic binary type rather than being left off the part.
+  for (const attachment of normalizedAttachments) {
     const contentType = validatedMediaType(attachment.contentType ?? 'application/octet-stream');
     const encodedFilename = encodedFilenameParameter(attachment.filename);
     parts.push(
@@ -131,6 +175,20 @@ export function composeMimeMessage(options: SendEmailOptions, senderEmail: strin
       `Content-Disposition: attachment; filename*=UTF-8''${encodedFilename}`,
       '',
       wrapBase64(attachment.dataBase64),
+    );
+  }
+
+  for (let idx = 0; idx < attachedEmails.length; idx++) {
+    const email = attachedEmails[idx];
+    const filename = email.filename || `attached-message-${idx + 1}.eml`;
+    const encodedFilename = encodedFilenameParameter(filename);
+    parts.push(
+      `--${mixedBoundary}`,
+      `Content-Type: message/rfc822; name*=UTF-8''${encodedFilename}`,
+      'Content-Transfer-Encoding: 8bit',
+      `Content-Disposition: attachment; filename*=UTF-8''${encodedFilename}`,
+      '',
+      email.rawEml.trim(),
     );
   }
 
@@ -168,7 +226,7 @@ export function buildReplyHeaders(parent: {
 
 /** Prefix a reply subject with `Re:` unless it already carries one. */
 export function replySubject(subject: string): string {
-  return /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
+  return /^\s*(re|sv|vs|aw|antw|ref)\s*:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
 }
 
 /** Prefix a forwarded subject with `Fwd:` unless it already carries one. */

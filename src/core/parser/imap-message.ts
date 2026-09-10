@@ -1,47 +1,42 @@
 /**
  * RFC 5322 / MIME reader for IMAP FETCH responses.
  *
- * The naive approach — slice at the first blank line and hand the rest back as
- * the body — fails in four separate ways that all corrupt what the caller
- * reads:
- *
- *  - the IMAP response wrapper (`* 5 FETCH (BODY[] {2048}` … `)` … `OK`) ends
- *    up inside the message,
- *  - folded headers are truncated at the first line, silently dropping every
- *    recipient after the first on a wrapped Cc,
- *  - quoted-printable and base64 bodies are never decoded, so `æ` reads as
- *    `=C3=A6`,
- *  - multipart messages return the raw MIME soup rather than the text part.
- *
- * This module addresses all four so callers get the message the sender wrote.
+ * Robustly parses MIME trees (multipart/mixed, multipart/alternative,
+ * multipart/related, message/rfc822), extracts unfolded headers, decodes
+ * quoted-printable, base64 and charset variations, and extracts all attachment
+ * metadata and base64 payloads.
  */
+
+export interface ParsedAttachment {
+  attachmentId: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  contentDisposition?: string;
+  contentId?: string;
+  dataBase64: string;
+}
 
 export interface ParsedMimeMessage {
   headers: Record<string, string>;
   text: string;
   html: string;
+  attachments: ParsedAttachment[];
+  raw?: string;
 }
 
 /**
  * Strip the IMAP FETCH wrapper and return the message octets.
- *
- * The `{N}` literal prefix states the exact byte count, which is the only
- * reliable delimiter: a message body can itself contain a line that looks like
- * the closing paren of the response.
  */
 export function extractFetchLiteral(response: string): string {
   const literal = response.match(/\{(\d+)\}\r?\n/);
   if (!literal) {
-    // No literal: either an empty result or a synthetic response in tests.
     return response;
   }
 
   const start = literal.index! + literal[0].length;
   const byteCount = parseInt(literal[1], 10);
 
-  // The socket is read with setEncoding('utf8'), so `response` is already
-  // decoded text while the literal count is in octets. Measure in UTF-8 bytes
-  // and convert back, or a body containing æ would be cut short.
   const bytes = Buffer.from(response.slice(start), 'utf8');
   return bytes.subarray(0, byteCount).toString('utf8');
 }
@@ -56,7 +51,6 @@ export function splitMessage(raw: string): { headers: Record<string, string>; bo
 }
 
 export function parseHeaderBlock(headerBlock: string): Record<string, string> {
-  // Continuation lines start with whitespace and belong to the header above.
   const unfolded = headerBlock.replace(/\r?\n[ \t]+/g, ' ');
   const headers: Record<string, string> = {};
 
@@ -65,8 +59,6 @@ export function parseHeaderBlock(headerBlock: string): Record<string, string> {
     if (!match) continue;
 
     const name = match[1].toLowerCase();
-    // Duplicate headers (Received, References) keep the first occurrence,
-    // which is what address and threading lookups expect.
     if (!(name in headers)) {
       headers[name] = match[2].trim();
     }
@@ -84,7 +76,6 @@ export function decodeBody(body: string, encoding: string, charset: string): str
   }
 
   if (normalised === 'quoted-printable') {
-    // Soft line breaks are continuations, not content.
     const joined = body.replace(/=\r?\n/g, '');
     const bytes: number[] = [];
 
@@ -94,26 +85,44 @@ export function decodeBody(body: string, encoding: string, charset: string): str
         index += 2;
         continue;
       }
-      // Literal characters are already decoded text, so re-encode them rather
-      // than truncating each one to a single byte.
       bytes.push(...Buffer.from(joined[index], 'utf8'));
     }
 
     return Buffer.from(bytes).toString(toNodeCharset(charset));
   }
 
-  // 7bit, 8bit, binary: the transport already delivered readable text.
   return body;
 }
 
+/** Decode raw body into a binary Buffer */
+export function decodeBodyToBuffer(body: string, encoding: string): Buffer {
+  const normalised = encoding.trim().toLowerCase();
+  if (normalised === 'base64') {
+    return Buffer.from(body.replace(/\s+/g, ''), 'base64');
+  }
+  if (normalised === 'quoted-printable') {
+    const joined = body.replace(/=\r?\n/g, '');
+    const bytes: number[] = [];
+    for (let index = 0; index < joined.length; index += 1) {
+      if (joined[index] === '=' && /^[0-9A-Fa-f]{2}$/.test(joined.slice(index + 1, index + 3))) {
+        bytes.push(parseInt(joined.slice(index + 1, index + 3), 16));
+        index += 2;
+        continue;
+      }
+      bytes.push(...Buffer.from(joined[index], 'utf8'));
+    }
+    return Buffer.from(bytes);
+  }
+  return Buffer.from(body, 'utf8');
+}
+
 /**
- * Parse a complete message, walking multipart trees to find the text and HTML
- * alternatives. The last non-empty alternative wins, matching how mail clients
- * treat multipart/alternative ordering.
+ * Parse a complete message, walking multipart trees to find text/html bodies
+ * and all attachments.
  */
 export function parseMimeMessage(raw: string): ParsedMimeMessage {
   const { headers, body } = splitMessage(raw);
-  const result: ParsedMimeMessage = { headers, text: '', html: '' };
+  const result: ParsedMimeMessage = { headers, text: '', html: '', attachments: [], raw };
   walkPart(headers, body, result);
   return result;
 }
@@ -137,15 +146,44 @@ function walkPart(
     return;
   }
 
-  // A part with a filename is an attachment, not the message text.
   const disposition = headers['content-disposition'] ?? '';
-  if (/attachment/i.test(disposition) || parameterOf(disposition, 'filename')) return;
+  const isExplicitAttachment = /attachment/i.test(disposition);
+  const rawFilename = parameterOf(disposition, 'filename')
+    ?? parameterOf(disposition, 'filename*')
+    ?? parameterOf(contentType, 'name')
+    ?? parameterOf(contentType, 'name*');
 
-  const decoded = decodeBody(
-    body,
-    headers['content-transfer-encoding'] ?? '7bit',
-    parameterOf(contentType, 'charset') ?? 'utf-8',
-  );
+  const encoding = headers['content-transfer-encoding'] ?? '7bit';
+  const charset = parameterOf(contentType, 'charset') ?? 'utf-8';
+
+  if (isExplicitAttachment || rawFilename || (mediaType !== 'text/plain' && mediaType !== 'text/html')) {
+    let filename = rawFilename ? decodeFilename(rawFilename) : '';
+    if (!filename) {
+      if (mediaType === 'message/rfc822') {
+        const inner = parseHeaderBlock(body);
+        filename = `${decodeEncodedWords(inner.subject || 'attached-message')}.eml`;
+      } else {
+        const ext = mediaType.split('/')[1] || 'bin';
+        filename = `attachment-${result.attachments.length + 1}.${ext}`;
+      }
+    }
+
+    const buf = decodeBodyToBuffer(body, encoding);
+    const attachmentId = String(result.attachments.length + 1);
+
+    result.attachments.push({
+      attachmentId,
+      filename,
+      contentType: mediaType,
+      size: buf.byteLength,
+      contentDisposition: disposition ? disposition.split(';')[0].trim() : undefined,
+      contentId: headers['content-id']?.replace(/^<|>$/g, ''),
+      dataBase64: buf.toString('base64'),
+    });
+    return;
+  }
+
+  const decoded = decodeBody(body, encoding, charset);
 
   if (mediaType === 'text/html') {
     result.html = decoded;
@@ -160,7 +198,6 @@ function splitOnBoundary(body: string, boundary: string): string[] {
 
   for (const chunk of body.split(delimiter)) {
     const trimmed = chunk.replace(/^\r?\n/, '');
-    // The preamble before the first boundary and the "--" epilogue are not parts.
     if (trimmed.length === 0 || trimmed.startsWith('--')) continue;
     sections.push(trimmed);
   }
@@ -170,7 +207,8 @@ function splitOnBoundary(body: string, boundary: string): string[] {
 
 /** Read a `; name=value` parameter off a structured header value. */
 function parameterOf(headerValue: string, name: string): string | undefined {
-  const match = headerValue.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"|${name}\\s*=\\s*([^;\\s]+)`, 'i'));
+  const safeName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = headerValue.match(new RegExp(`${safeName}\\s*=\\s*"([^"]+)"|${safeName}\\s*=\\s*([^;\\s]+)`, 'i'));
   if (!match) return undefined;
   return (match[1] ?? match[2])?.trim();
 }
@@ -179,9 +217,19 @@ function toNodeCharset(charset: string): BufferEncoding {
   const normalised = charset.trim().toLowerCase().replace(/^"|"$/g, '');
   if (normalised === 'utf-8' || normalised === 'utf8') return 'utf8';
   if (normalised === 'us-ascii' || normalised === 'ascii') return 'ascii';
-  // latin-1 and unknown labels: Node's binary mapping preserves the octets
-  // rather than replacing them, which is the least destructive fallback.
   return 'latin1';
+}
+
+function decodeFilename(raw: string): string {
+  // Handle RFC 2231 filename*=UTF-8''... format
+  if (raw.toLowerCase().startsWith("utf-8''")) {
+    try {
+      return decodeURIComponent(raw.slice(7));
+    } catch {
+      return raw.slice(7);
+    }
+  }
+  return decodeEncodedWords(raw.replace(/^"|"$/g, ''));
 }
 
 /**

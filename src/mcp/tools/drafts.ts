@@ -26,15 +26,16 @@ export function registerDraftTools(server: McpServer, getClient: () => GmailClie
     CreateDraftSchema.shape,
     async (args) => run('create_draft', async () => {
       const draft = await getClient().createDraft({
-        to: args.to,
+        to: args.to || '',
         cc: args.cc,
         bcc: args.bcc,
         from: args.from,
-        subject: args.subject,
-        bodyText: args.bodyText,
+        subject: args.subject || '',
+        bodyText: args.bodyText || '',
         bodyHtml: args.bodyHtml,
         threadId: args.threadId,
-        attachments: args.attachments,
+        attachments: args.attachments as any,
+        attachEmailUids: args.attachEmailIds,
       });
 
       return {
@@ -55,15 +56,16 @@ export function registerDraftTools(server: McpServer, getClient: () => GmailClie
     UpdateDraftSchema.shape,
     async (args) => run('update_draft', async () => {
       const draft = await getClient().updateDraft(args.draftId, {
-        to: args.to,
+        to: args.to || '',
         cc: args.cc,
         bcc: args.bcc,
         from: args.from,
-        subject: args.subject,
-        bodyText: args.bodyText,
+        subject: args.subject || '',
+        bodyText: args.bodyText || '',
         bodyHtml: args.bodyHtml,
         threadId: args.threadId,
-        attachments: args.attachments,
+        attachments: args.attachments as any,
+        attachEmailUids: args.attachEmailIds,
       });
 
       return {

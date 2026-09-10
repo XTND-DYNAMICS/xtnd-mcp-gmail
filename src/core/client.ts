@@ -17,6 +17,7 @@ import {
 } from './parser/rfc822.js';
 import { GMAIL_SCOPES, assertScope } from './auth/scopes.js';
 import type {
+  AttachedEmail,
   AutoForwarding,
   Delegate,
   EmailDetail,
@@ -112,7 +113,23 @@ export class GmailClient {
 
   async sendMessage(options: SendEmailOptions): Promise<EmailHeaderSummary> {
     this.requireScope(GMAIL_SCOPES.send, 'sending mail');
-    const raw = toGmailRaw(composeMimeMessage(options, this.rest.mailbox));
+
+    const attachedEmails: AttachedEmail[] = [...(options.attachedEmails || [])];
+    if (options.attachEmailUids?.length) {
+      for (const id of options.attachEmailUids) {
+        try {
+          const rawMsg = await this.getMessage(String(id), 'raw');
+          if (rawMsg.raw) {
+            attachedEmails.push({
+              filename: `${(rawMsg.subject || `message-${id}`).replace(/[/\\?%*:|"<>]/g, '_')}.eml`,
+              rawEml: rawMsg.raw,
+            });
+          }
+        } catch {}
+      }
+    }
+
+    const raw = toGmailRaw(composeMimeMessage({ ...options, attachedEmails }, this.rest.mailbox));
     const resource = await this.rest.request<GmailMessageResource>('/users/me/messages/send', {
       method: 'POST',
       body: { raw, threadId: options.threadId },
@@ -303,7 +320,23 @@ export class GmailClient {
 
   async createDraft(options: SendEmailOptions): Promise<GmailDraft> {
     this.requireScope(GMAIL_SCOPES.compose, 'creating a draft');
-    const raw = toGmailRaw(composeMimeMessage(options, this.rest.mailbox));
+
+    const attachedEmails: AttachedEmail[] = [...(options.attachedEmails || [])];
+    if (options.attachEmailUids?.length) {
+      for (const id of options.attachEmailUids) {
+        try {
+          const rawMsg = await this.getMessage(String(id), 'raw');
+          if (rawMsg.raw) {
+            attachedEmails.push({
+              filename: `${(rawMsg.subject || `message-${id}`).replace(/[/\\?%*:|"<>]/g, '_')}.eml`,
+              rawEml: rawMsg.raw,
+            });
+          }
+        } catch {}
+      }
+    }
+
+    const raw = toGmailRaw(composeMimeMessage({ ...options, attachedEmails }, this.rest.mailbox));
     const resource = await this.rest.request<{ id: string; message: GmailMessageResource }>(
       '/users/me/drafts',
       { method: 'POST', body: { message: { raw, threadId: options.threadId } } },
@@ -313,7 +346,23 @@ export class GmailClient {
 
   async updateDraft(draftId: string, options: SendEmailOptions): Promise<GmailDraft> {
     this.requireScope(GMAIL_SCOPES.compose, 'updating a draft');
-    const raw = toGmailRaw(composeMimeMessage(options, this.rest.mailbox));
+
+    const attachedEmails: AttachedEmail[] = [...(options.attachedEmails || [])];
+    if (options.attachEmailUids?.length) {
+      for (const id of options.attachEmailUids) {
+        try {
+          const rawMsg = await this.getMessage(String(id), 'raw');
+          if (rawMsg.raw) {
+            attachedEmails.push({
+              filename: `${(rawMsg.subject || `message-${id}`).replace(/[/\\?%*:|"<>]/g, '_')}.eml`,
+              rawEml: rawMsg.raw,
+            });
+          }
+        } catch {}
+      }
+    }
+
+    const raw = toGmailRaw(composeMimeMessage({ ...options, attachedEmails }, this.rest.mailbox));
     const resource = await this.rest.request<{ id: string; message: GmailMessageResource }>(
       `/users/me/drafts/${encodeURIComponent(draftId)}`,
       { method: 'PUT', body: { message: { raw, threadId: options.threadId } } },

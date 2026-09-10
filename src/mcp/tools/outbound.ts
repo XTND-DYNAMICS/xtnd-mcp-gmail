@@ -8,6 +8,7 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { GmailClient } from '../../core/client.js';
+import { forwardSubject, replySubject } from '../../core/parser/rfc822.js';
 import { ForwardMessageSchema, ReplyMessageSchema, SendMessageSchema } from '../schemas.js';
 import { run } from './respond.js';
 
@@ -26,7 +27,8 @@ export function registerOutboundTools(server: McpServer, getClient: () => GmailC
         subject: args.subject,
         bodyText: args.bodyText,
         bodyHtml: args.bodyHtml,
-        attachments: args.attachments,
+        attachments: args.attachments as any,
+        attachEmailUids: args.attachEmailIds,
       });
 
       return {
@@ -46,11 +48,23 @@ export function registerOutboundTools(server: McpServer, getClient: () => GmailC
     + 'derived from the original so Gmail groups the reply correctly.',
     ReplyMessageSchema.shape,
     async (args) => run('reply_message', async () => {
-      const sent = await getClient().replyToMessage(args.messageId, {
+      const parent = await getClient().getMessage(args.messageId, 'full');
+      const sent = await getClient().sendMessage({
+        from: args.from,
+        to: (parent.replyTo?.length ? parent.replyTo : parent.from).map((a) => a.address),
+        cc: args.replyAll
+          ? [...(parent.to ?? []), ...(parent.cc ?? [])]
+              .map((a) => a.address)
+              .filter((a) => a.toLowerCase() !== getClient().mailbox.toLowerCase())
+          : undefined,
+        subject: replySubject(parent.subject),
         bodyText: args.bodyText,
         bodyHtml: args.bodyHtml,
-        replyAll: args.replyAll,
-        from: args.from,
+        inReplyTo: parent.messageId,
+        references: [parent.references, parent.messageId].filter(Boolean).join(' ').trim(),
+        threadId: parent.threadId,
+        attachments: args.attachments as any,
+        attachEmailUids: args.attachEmailIds,
       });
 
       return {
@@ -68,14 +82,46 @@ export function registerOutboundTools(server: McpServer, getClient: () => GmailC
 
   server.tool(
     'forward_message',
-    'Forward an existing message, optionally with a note above the quoted original.',
+    'Forward an existing message, optionally with a note above the quoted original or as an attached .eml file.',
     ForwardMessageSchema.shape,
     async (args) => run('forward_message', async () => {
-      const sent = await getClient().forwardMessage(args.messageId, {
-        to: args.to,
-        comment: args.comment,
-        from: args.from,
-      });
+      const source = await getClient().getMessage(args.messageId, 'full');
+      let sent: any;
+
+      if (args.attachAsEml) {
+        const rawMsg = await getClient().getMessage(args.messageId, 'raw');
+        sent = await getClient().sendMessage({
+          from: args.from,
+          to: args.to,
+          subject: forwardSubject(source.subject),
+          bodyText: args.comment || 'Attached is the forwarded message.',
+          attachments: args.attachments as any,
+          attachedEmails: rawMsg.raw ? [{
+            filename: `${source.subject.replace(/[/\\?%*:|"<>]/g, '_')}.eml`,
+            rawEml: rawMsg.raw,
+          }] : undefined,
+        });
+      } else {
+        const quoted = [
+          args.comment ?? '',
+          '',
+          '---------- Forwarded message ----------',
+          `From: ${source.from.map((a) => a.address).join(', ')}`,
+          `Date: ${source.date}`,
+          `Subject: ${source.subject}`,
+          `To: ${source.to.map((a) => a.address).join(', ')}`,
+          '',
+          source.bodyText ?? source.bodyMarkdown ?? '',
+        ].join('\n');
+
+        sent = await getClient().sendMessage({
+          from: args.from,
+          to: args.to,
+          subject: forwardSubject(source.subject),
+          bodyText: quoted,
+          attachments: args.attachments as any,
+        });
+      }
 
       return {
         sent: true,
