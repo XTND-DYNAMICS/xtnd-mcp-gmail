@@ -1,9 +1,10 @@
 name: Deploy production
 on:
   # Merging to main ships the Worker at gmail.mcp.xgi.io, as it does for every
-  # other XTND service. This repository is public: pull requests, including
-  # those from forks, never trigger this workflow and never see its secrets.
-  # They are checked by ci.yml.
+  # other XTND service. Pull requests never trigger this workflow; ci.yml checks
+  # them. This repository is public: pull requests from forks run ci.yml with no
+  # secret but a read-only GITHUB_TOKEN. Anyone with write access can still reach
+  # the repository and organization secrets through a workflow of their own.
   push:
     branches: [main]
   workflow_dispatch:
@@ -14,6 +15,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
+    # A manual run deploys main only: any other branch or tag would ship
+    # unreviewed code without a release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ${{ case(vars.XTND_RUNNER == 'local', 'xtnd-ci', 'ubuntu-latest') }}
     environment: production
     permissions:
@@ -31,8 +35,9 @@ jobs:
       # Every deploy ships a version no other build has carried. Before
       # anything is installed or built, package.json moves to the next version,
       # committed to main as "chore(release): vX.Y.Z [skip ci]" and tagged
-      # vX.Y.Z; that commit is what this job builds and deploys, so
-      # version.json, /version and the version widget all show it.
+      # vX.Y.Z; that commit is what this job builds and deploys, so /health,
+      # both MCP servers' serverInfo, the OpenAPI document and the outbound
+      # User-Agent all report it.
       # - Patch by default. "[release:minor]" or "[release:major]" in the
       #   subject of a commit since the last release, or in the title of its
       #   pull request, asks for more. Never edit the version by hand.
