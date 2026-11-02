@@ -29,11 +29,11 @@ import {
 import { z } from 'zod';
 import { readRequestJson, RequestBodyTooLargeError } from './request-body.js';
 import { handleSseConnect } from './sse-handler.js';
-import { VERSION } from '../version.js';
+import { BUILD_STAMP } from '../version.generated.js';
 
 const SERVER_INFO = {
   name: '@xtnd-dynamics/mcp-gmail',
-  version: VERSION,
+  version: BUILD_STAMP.version,
 };
 
 const PROTOCOL_VERSION = '2024-11-05';

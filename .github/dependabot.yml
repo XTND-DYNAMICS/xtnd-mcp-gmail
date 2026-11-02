@@ -1,25 +1,59 @@
-# New wrangler releases are pulled here, never pushed. Dependabot opens a PR;
-# nothing changes until that PR is merged to main.
+# Every dependency, always the latest (Peter, 2 Nov 2026). New releases are
+# pulled here, never pushed from the libraries: Dependabot opens a grouped PR as
+# soon as anything has a newer release. Nothing merges it by itself.
 #
-# Same as the XSuite apps' file (AGENTS.md §6, §11), without the GitHub Packages
-# registry: this repo uses no @xtnd-dynamics packages, so it needs no token.
+# - Groups: a dependency goes to the first group it matches (xtnd, wrangler,
+#   then everything else).
+# - Cooldown: Dependabot's default 3-day wait is off ("*" excluded from it,
+#   the lowest it allows).
+# - "fix(deps)": a merged update is a patch release, so it ships
+#   (XCore docs/VERSION.md).
+#
+# XTND_PACKAGES_TOKEN must exist as a Dependabot secret (separate from the
+# Actions secret of the same name): Dependabot reads private packages with it,
+# and the PR's own build gets only Dependabot secrets.
 version: 2
+registries:
+  xtnd-packages:
+    type: npm-registry
+    url: https://npm.pkg.github.com
+    scope: "@xtnd-dynamics"
+    token: ${{secrets.XTND_PACKAGES_TOKEN}}
 updates:
   - package-ecosystem: npm
     directory: /
+    registries:
+      - xtnd-packages
     schedule:
       interval: daily
-    # Dependabot otherwise waits 3 days after a release; these are offered as soon
-    # as they are published.
     cooldown:
       exclude:
-        - wrangler
-        - "@cloudflare/workers-types"
-    allow:
-      - dependency-name: wrangler
-      - dependency-name: "@cloudflare/workers-types"
+        - "*"
+    commit-message:
+      prefix: fix(deps)
     groups:
+      xtnd:
+        patterns:
+          - "@xtnd-dynamics/*"
       wrangler:
         patterns:
           - wrangler
           - "@cloudflare/workers-types"
+      dependencies:
+        patterns:
+          - "*"
+
+  # GitHub's actions in the workflows (checkout, setup-node, wrangler-action, …).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    cooldown:
+      exclude:
+        - "*"
+    commit-message:
+      prefix: fix(deps)
+    groups:
+      github-actions:
+        patterns:
+          - "*"

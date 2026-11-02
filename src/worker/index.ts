@@ -16,7 +16,11 @@ import { handleMcpStreamableHttp } from './mcp-streamable-http.js';
 import { getOpenApiSpec } from './openapi.js';
 import { readRequestJson, RequestBodyTooLargeError } from './request-body.js';
 import { handleMessagePost, handleSseConnect } from './sse-handler.js';
-import { VERSION as SERVICE_VERSION } from '../version.js';
+import { versionRoutes } from '@xtnd-dynamics/xtnd-platform';
+import { BUILD_STAMP } from '../version.generated.js';
+
+/** GET /health and GET /version, as every XSuite API serves them (AGENTS.md §3), from the build stamp. */
+const versioned = versionRoutes(BUILD_STAMP);
 const MAIL_SCOPES = ['mail.read', 'mail.manage', 'mail.send', 'mail.delete'] as const;
 
 export default {
@@ -29,14 +33,9 @@ export default {
         return finish(corsPreflight(request, env));
       }
 
-      if (url.pathname === '/health' && request.method === 'GET') {
-        return finish(json({
-          status: 'ok',
-          service: '@xtnd-dynamics/mcp-gmail',
-          version: SERVICE_VERSION,
-          credentialModel: 'authenticated account linking',
-          timestamp: new Date().toISOString(),
-        }));
+      const versionResponse = await versioned(request);
+      if (versionResponse) {
+        return finish(versionResponse);
       }
 
       if (url.pathname === '/openapi.json' && request.method === 'GET') {
@@ -272,7 +271,7 @@ function json(
 
 function serverCard(): Record<string, unknown> {
   return {
-    serverInfo: { name: 'XTND | MCP | GMAIL', version: SERVICE_VERSION },
+    serverInfo: { name: 'XTND | MCP | GMAIL', version: BUILD_STAMP.version },
     icon: 'https://raw.githubusercontent.com/XTND-DYNAMICS/xtnd-mcp-gmail/main/assets/icon.svg',
     description: 'Supreme MCP server for Gmail and Google Workspace with dual-mode App Password & OAuth2 support.',
     homepage: 'https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail#readme',

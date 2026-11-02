@@ -15,10 +15,10 @@ import { registerReadTools } from './tools/read.js';
 import { registerSearchTools } from './tools/search.js';
 import { registerSettingsTools } from './tools/settings.js';
 import { registerTriageTools } from './tools/triage.js';
-import { VERSION } from '../version.js';
+import { BUILD_STAMP } from '../version.generated.js';
 
 export function createGmailMcpServer(getClient: () => GmailClient): McpServer {
-  const server = new McpServer({ name: '@xtnd-dynamics/mcp-gmail', version: VERSION });
+  const server = new McpServer({ name: '@xtnd-dynamics/mcp-gmail', version: BUILD_STAMP.version });
 
   registerSearchTools(server, getClient);
   registerReadTools(server, getClient);
