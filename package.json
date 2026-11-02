@@ -50,7 +50,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "precheck": "npm run typegen",
     "check": "tsc --noEmit",
+    "prebuild": "npm run typegen",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "prepack": "npm run build",
     "sync:smithery": "tsx scripts/sync-smithery.ts",
