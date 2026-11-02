@@ -11,3 +11,4 @@ dist/
 *.log
 coverage/
 worker-configuration.d.ts
+src/version.ts

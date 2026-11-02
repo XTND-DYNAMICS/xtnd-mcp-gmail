@@ -15,8 +15,7 @@ import { registerReadTools } from './tools/read.js';
 import { registerSearchTools } from './tools/search.js';
 import { registerSettingsTools } from './tools/settings.js';
 import { registerTriageTools } from './tools/triage.js';
-
-const VERSION = '0.1.0';
+import { VERSION } from '../version.js';
 
 export function createGmailMcpServer(getClient: () => GmailClient): McpServer {
   const server = new McpServer({ name: '@xtnd-dynamics/mcp-gmail', version: VERSION });

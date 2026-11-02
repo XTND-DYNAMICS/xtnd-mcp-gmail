@@ -1,4 +1,4 @@
-name: CI & Cloudflare Deployment
+name: CI
 
 on:
   push:
@@ -6,13 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -22,6 +25,8 @@ jobs:
         run: npm run check
       - name: Build
         run: npm run build
+      - name: Bundle the Worker (dry run, nothing is uploaded)
+        run: npx wrangler deploy --dry-run --outdir dist/worker
       - name: Sync Smithery Registry
         if: github.ref == 'refs/heads/main' && env.SMITHERY_API_KEY != ''
         env:

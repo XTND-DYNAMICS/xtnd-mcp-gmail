@@ -48,11 +48,13 @@
     }
   },
   "scripts": {
+    "prepare": "node scripts/write-version.mjs",
     "dev": "wrangler dev",
+    "predeploy": "node scripts/write-version.mjs",
     "deploy": "wrangler deploy",
-    "precheck": "npm run typegen",
+    "precheck": "npm run typegen && node scripts/write-version.mjs",
     "check": "tsc --noEmit",
-    "prebuild": "npm run typegen",
+    "prebuild": "npm run typegen && node scripts/write-version.mjs",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "prepack": "npm run build",
     "sync:smithery": "tsx scripts/sync-smithery.ts",

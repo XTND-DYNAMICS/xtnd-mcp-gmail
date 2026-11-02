@@ -6,13 +6,18 @@
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "observability": {
     "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": false,
     "logs": {
       "enabled": true,
-      "head_sampling_rate": 1
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
     },
     "traces": {
       "enabled": true,
-      "head_sampling_rate": 0.01
+      "head_sampling_rate": 0.01,
+      "persist": true
     }
   },
   "secrets": {
@@ -25,6 +30,7 @@
     }
   ],
   "workers_dev": false,
+  "preview_urls": false,
   "kv_namespaces": [
     {
       "binding": "KV",
