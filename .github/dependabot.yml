@@ -1,0 +1,25 @@
+# New wrangler releases are pulled here, never pushed. Dependabot opens a PR;
+# nothing changes until that PR is merged to main.
+#
+# Same as the XSuite apps' file (AGENTS.md §6, §11), without the GitHub Packages
+# registry: this repo uses no @xtnd-dynamics packages, so it needs no token.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    # Dependabot otherwise waits 3 days after a release; these are offered as soon
+    # as they are published.
+    cooldown:
+      exclude:
+        - wrangler
+        - "@cloudflare/workers-types"
+    allow:
+      - dependency-name: wrangler
+      - dependency-name: "@cloudflare/workers-types"
+    groups:
+      wrangler:
+        patterns:
+          - wrangler
+          - "@cloudflare/workers-types"
