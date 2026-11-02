@@ -1,0 +1,131 @@
+name: Deploy production
+on:
+  # Merging to main ships the Worker at gmail.mcp.xgi.io, as it does for every
+  # other XTND service. This repository is public: pull requests, including
+  # those from forks, never trigger this workflow and never see its secrets.
+  # They are checked by ci.yml.
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ${{ case(vars.XTND_RUNNER == 'local', 'xtnd-ci', 'ubuntu-latest') }}
+    environment: production
+    permissions:
+      contents: write  # the release commit and its tag
+      pull-requests: read  # a pull request's title can ask for minor or major
+      actions: write  # stand down when a newer run releases main
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0  # the tags and history the release step reads
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+
+      # Every deploy ships a version no other build has carried. Before
+      # anything is installed or built, package.json moves to the next version,
+      # committed to main as "chore(release): vX.Y.Z [skip ci]" and tagged
+      # vX.Y.Z; that commit is what this job builds and deploys, so
+      # version.json, /version and the version widget all show it.
+      # - Patch by default. "[release:minor]" or "[release:major]" in the
+      #   subject of a commit since the last release, or in the title of its
+      #   pull request, asks for more. Never edit the version by hand.
+      # - The commit and the tag are pushed together or not at all, and never
+      #   over an existing tag. [skip ci] and GITHUB_TOKEN keep the push from
+      #   starting another run.
+      # - If main moved on while this run waited, the newer run releases this
+      #   commit with its own and this run cancels itself. If no newer run is
+      #   coming (the newer commits were [skip ci]), this run releases main.
+      - name: Release the next version
+        id: release
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch --quiet --force --prune origin '+refs/heads/main:refs/remotes/origin/main' '+refs/tags/*:refs/tags/*'
+            tip="$(git rev-parse origin/main)"
+            base="$GITHUB_SHA"
+            if [[ "$tip" != "$GITHUB_SHA" ]]; then
+              if ! git merge-base --is-ancestor "$GITHUB_SHA" "$tip"; then
+                echo "::error::$GITHUB_SHA is no longer on main, so there is nothing of it to release." >&2
+                exit 1
+              fi
+              workflow="$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)"
+              newer="$(gh api "repos/$GH_REPO/actions/workflows/$workflow/runs?branch=main&per_page=50" \
+                --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID and (.event == \"push\" or .event == \"workflow_dispatch\")) | .head_sha" \
+                | grep -xF -f <(git rev-list "$GITHUB_SHA..$tip") || true)"
+              if [[ -n "$newer" ]]; then
+                echo "::notice::main moved on; the run for ${newer:0:7} releases this commit with its own, so this run cancels itself."
+                gh run cancel "$GITHUB_RUN_ID"
+                sleep 300
+                echo "::error::The run did not cancel." >&2
+                exit 1
+              fi
+              echo "::notice::main moved on with commits that start no deploy of their own; releasing main's tip ${tip:0:7}."
+              base="$tip"
+            fi
+            git checkout --quiet --force -B main "$base"
+
+            # What the commits since the last release ask for.
+            last="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+            if [[ -n "$last" ]]; then
+              range="$last..HEAD"
+            elif [[ -n "${BEFORE:-}" ]] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              range="$BEFORE..HEAD"
+            else
+              range="HEAD^!"
+            fi
+            asks="$(git log --format=%s "$range")"
+            for commit in $(git rev-list --first-parent "$range"); do
+              asks+=$'\n'"$(gh api "repos/$GH_REPO/commits/$commit/pulls" --jq '.[].title')"
+            done
+            level="patch"
+            if grep -qF '[release:major]' <<<"$asks"; then
+              level="major"
+            elif grep -qF '[release:minor]' <<<"$asks"; then
+              level="minor"
+            fi
+
+            npm version "$level" --no-git-tag-version --ignore-scripts >/dev/null
+            version="$(node -p "require('./package.json').version")"
+            if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+              echo "::error::v$version is tagged already: it was released before, and a version is never released twice." >&2
+              exit 1
+            fi
+            git add package.json
+            if [[ -f package-lock.json ]]; then git add package-lock.json; fi
+            git commit --quiet -m "chore(release): v$version [skip ci]"
+            git tag -a "v$version" -m "v$version"
+            if git push --quiet --atomic origin HEAD:refs/heads/main "refs/tags/v$version"; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              echo "::notice::Released v$version ($level) as $(git rev-parse --short HEAD), from ${range}."
+              exit 0
+            fi
+            git tag -d "v$version" >/dev/null
+            echo "main moved while the release was pushed; starting again ($attempt/3)."
+          done
+          echo "::error::The release could not be pushed in 3 attempts." >&2
+          exit 1
+      - run: npm ci
+      # Type-check, build the CLI, bundle the Worker without uploading it, and
+      # refuse high-severity advisories before anything reaches production.
+      - run: npm run check && npm run build && npx wrangler deploy --dry-run --outdir dist/worker && npm audit --audit-level=high
+      # Secrets set on the Worker (CREDENTIALS_MASTER_KEY) are kept by a deploy;
+      # the vars and bindings in wrangler.jsonc replace the live ones.
+      - run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

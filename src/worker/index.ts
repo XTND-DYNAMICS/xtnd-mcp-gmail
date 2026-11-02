@@ -16,8 +16,7 @@ import { handleMcpStreamableHttp } from './mcp-streamable-http.js';
 import { getOpenApiSpec } from './openapi.js';
 import { readRequestJson, RequestBodyTooLargeError } from './request-body.js';
 import { handleMessagePost, handleSseConnect } from './sse-handler.js';
-
-const SERVICE_VERSION = '0.1.0';
+import { VERSION as SERVICE_VERSION } from '../version.js';
 const MAIL_SCOPES = ['mail.read', 'mail.manage', 'mail.send', 'mail.delete'] as const;
 
 export default {

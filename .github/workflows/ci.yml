@@ -1,4 +1,4 @@
-name: CI & Cloudflare Deployment
+name: CI
 
 on:
   push:
@@ -22,6 +22,8 @@ jobs:
         run: npm run check
       - name: Build
         run: npm run build
+      - name: Bundle the Worker (dry run, nothing is uploaded)
+        run: npx wrangler deploy --dry-run --outdir dist/worker
       - name: Sync Smithery Registry
         if: github.ref == 'refs/heads/main' && env.SMITHERY_API_KEY != ''
         env:

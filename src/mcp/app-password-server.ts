@@ -6,11 +6,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { AppPasswordGmailClient } from '../core/app-password-client.js';
+import { VERSION } from '../version.js';
 
 export function createAppPasswordGmailMcpServer(getClient: () => AppPasswordGmailClient): McpServer {
   const server = new McpServer({
     name: '@xtnd-dynamics/mcp-gmail',
-    version: '0.1.0',
+    version: VERSION,
   });
 
   // ---------------------------------------------------------------- Search & Read

@@ -1,3 +1,5 @@
+import { VERSION } from '../version.js';
+
 /**
  * OpenAPI 3.0 Specification for ChatGPT Custom Actions and REST clients
  */
@@ -7,7 +9,7 @@ export function getOpenApiSpec(origin = 'https://gmail.mcp.xgi.io') {
     openapi: '3.0.3',
     info: {
       title: 'Gmail API (xtnd-mcp-gmail)',
-      version: '0.1.0',
+      version: VERSION,
       description:
         'Supreme Mail API for Gmail & Google Workspace. Authenticate with a bearer token, link the mailbox once, and call mail endpoints seamlessly.',
     },
