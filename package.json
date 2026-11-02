@@ -48,28 +48,34 @@
     }
   },
   "scripts": {
-    "prepare": "node scripts/write-version.mjs",
+    "prepare": "xsuite-stamp --no-dependencies",
+    "predev": "xsuite-stamp --no-dependencies",
     "dev": "wrangler dev",
-    "predeploy": "node scripts/write-version.mjs",
+    "predeploy": "xsuite-stamp --no-dependencies",
     "deploy": "wrangler deploy",
-    "precheck": "npm run typegen && node scripts/write-version.mjs",
+    "precheck": "npm run typegen && xsuite-stamp --no-dependencies",
     "check": "tsc --noEmit",
-    "prebuild": "npm run typegen && node scripts/write-version.mjs",
+    "prebuild": "npm run typegen && xsuite-stamp --no-dependencies",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "prepack": "npm run build",
     "sync:smithery": "tsx scripts/sync-smithery.ts",
+    "pretest": "xsuite-stamp --no-dependencies",
     "test": "tsx --test test/*.test.ts",
+    "pretest:security": "xsuite-stamp --no-dependencies",
     "test:security": "tsx --test test/oauth-pkce.test.ts test/local-profile-store.test.ts test/scopes.test.ts test/worker-auth.test.ts",
+    "pretest:stdio": "xsuite-stamp --no-dependencies",
     "test:stdio": "tsx scripts/test-local-stdio.ts",
     "typegen": "wrangler types"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
+    "@xtnd-dynamics/xtnd-platform": "^0.7.0",
     "worker-mailer": "^1.2.1",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.13.5",
+    "@xtnd-dynamics/xtnd-core-web": "^0.2.1",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
     "wrangler": "^4.156.1"

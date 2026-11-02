@@ -25,9 +25,9 @@ import {
   validatedReferences,
 } from './headers.js';
 import type { SendEmailOptions, OutboundAttachment, AttachedEmail } from '../../types.js';
-import { VERSION } from '../../version.js';
+import { BUILD_STAMP } from '../../version.generated.js';
 
-const USER_AGENT = `xtnd-mcp-gmail/${VERSION}`;
+const USER_AGENT = `xtnd-mcp-gmail/${BUILD_STAMP.version}`;
 
 function mediaTypeFor(name: string): string {
   const types: Record<string, string> = {
