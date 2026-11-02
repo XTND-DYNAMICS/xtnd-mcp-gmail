@@ -5,7 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Lets you ship a fix from the Actions tab without a commit.
+  # Releases and deploys main's unreleased commits from the Actions tab. A
+  # release whose deploy failed is not shipped this way: its tag exists, so
+  # semantic-release finds nothing to release until the next fix or feat.
   workflow_dispatch:
 
 concurrency:
@@ -36,10 +38,14 @@ jobs:
           package-manager-cache: false
       # @xtnd-dynamics/* come from GitHub Packages (.npmrc); the lockfile holds
       # them. A pull request from a fork gets no secret, so it cannot install them.
+      # The packages token is only in the step that downloads: no install
+      # script of any dependency runs while it is in the environment.
       - name: Install
         env:
           NODE_AUTH_TOKEN: ${{ secrets.XTND_PACKAGES_TOKEN }}
-        run: npm ci
+        run: npm ci --ignore-scripts
+      - name: Run the install scripts, without the token
+        run: npm rebuild
       - name: Type check
         run: npm run check
       - name: Build the CLI
@@ -66,6 +72,9 @@ jobs:
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
+          # semantic-release pushes with GITHUB_TOKEN from its own environment;
+          # the write token is not left in .git/config for later steps.
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '*'
@@ -74,7 +83,23 @@ jobs:
       - name: Install
         env:
           NODE_AUTH_TOKEN: ${{ secrets.XTND_PACKAGES_TOKEN }}
-        run: npm ci
+        run: npm ci --ignore-scripts
+      - name: Run the install scripts, without the token
+        run: npm rebuild
+
+      # An unset secret resolves to an empty string. Checked before the release,
+      # so a missing one stops the run before anything is tagged.
+      - name: Check required secrets
+        run: |
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is not set. Add it under Settings → Secrets and variables → Actions."
+              exit 1
+            fi
+          done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       # semantic-release (XCore's shared config, .releaserc.json) decides the
       # version from the Conventional Commits since the last vX.Y.Z tag:
@@ -93,21 +118,6 @@ jobs:
       - name: Build
         if: steps.release.outputs.released == 'true'
         run: npm run build
-
-      # An unset secret resolves to an empty string; the run stops here naming
-      # it rather than failing later in wrangler.
-      - name: Check required secrets
-        if: steps.release.outputs.released == 'true'
-        run: |
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Repository secret $name is not set. Add it under Settings → Secrets and variables → Actions."
-              exit 1
-            fi
-          done
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       # Secrets set on the Worker (CREDENTIALS_MASTER_KEY) are kept; the vars,
       # bindings and settings in wrangler.jsonc replace the live ones.
