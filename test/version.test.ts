@@ -1,13 +1,15 @@
 import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { BUILD_STAMP } from '../src/version.generated.js';
 import worker from '../src/worker/index.js';
 import { handleMcpStreamableHttp } from '../src/worker/mcp-streamable-http.js';
 import { getOpenApiSpec } from '../src/worker/openapi.js';
 import type { WorkerEnv } from '../src/types.js';
 
-const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+const pkg = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf8')) as { version: string };
 const env = { KV: { get: async () => null, put: async () => {}, delete: async () => {} } } as unknown as WorkerEnv;
 const get = (path: string) => worker.fetch(new Request(`https://gmail.mcp.xgi.io${path}`), env, {} as never);
 
