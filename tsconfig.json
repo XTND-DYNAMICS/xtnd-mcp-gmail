@@ -10,9 +10,8 @@
     "isolatedModules": true,
     "esModuleInterop": true,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["worker-configuration.d.ts", "src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
