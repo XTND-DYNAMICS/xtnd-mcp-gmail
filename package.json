@@ -75,7 +75,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.5",
-    "@xtnd-dynamics/xtnd-core-web": "^0.2.1",
+    "@xtnd-dynamics/xtnd-core-web": "^0.2.2",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",
     "wrangler": "^4.156.1"
