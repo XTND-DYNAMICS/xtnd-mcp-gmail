@@ -78,7 +78,7 @@
     "@xtnd-dynamics/xtnd-core-web": "^0.3.3",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "wrangler": "^4.156.2"
+    "wrangler": "^4.157.0"
   },
   "engines": {
     "node": ">=20"
