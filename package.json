@@ -69,13 +69,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
-    "@xtnd-dynamics/xtnd-platform": "^0.9.0",
+    "@xtnd-dynamics/xtnd-platform": "^0.15.0",
     "worker-mailer": "^1.3.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
-    "@xtnd-dynamics/xtnd-core-web": "^0.3.3",
+    "@xtnd-dynamics/xtnd-core-web": "^0.6.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "wrangler": "^4.156.2"
