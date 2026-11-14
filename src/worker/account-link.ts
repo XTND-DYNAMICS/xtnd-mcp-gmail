@@ -6,9 +6,9 @@ import { credentialVaultFromEnv, CredentialResolutionError } from './credential-
 import { readRequestJson, RequestBodyTooLargeError } from './request-body.js';
 
 const MAX_LINK_REQUEST_BYTES = 16_384;
-type MailboxVerifier = (credentials: GmailAppPasswordCredentials) => Promise<void>;
+export type MailboxVerifier = (credentials: GmailAppPasswordCredentials) => Promise<void>;
 
-async function defaultMailboxVerifier(credentials: GmailAppPasswordCredentials): Promise<void> {
+export async function defaultMailboxVerifier(credentials: GmailAppPasswordCredentials): Promise<void> {
   const client = new AppPasswordGmailClient(credentials);
   await client.listFolders();
 }
@@ -126,7 +126,7 @@ async function unlinkAccount(env: WorkerEnv, subject: string): Promise<Response>
   }
 }
 
-function parseLinkCredentials(value: unknown, env: WorkerEnv): GmailAppPasswordCredentials {
+export function parseLinkCredentials(value: unknown, env: WorkerEnv): GmailAppPasswordCredentials {
   if (!isRecord(value)) throw new Error('The mailbox credentials must be a JSON object.');
   const allowedKeys = new Set(['email', 'password', 'appPassword', 'imapHost', 'imapPort', 'smtpHost', 'smtpPort']);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {

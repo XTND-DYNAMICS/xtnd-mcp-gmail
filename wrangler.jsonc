@@ -35,6 +35,13 @@
     {
       "binding": "KV",
       "id": "6d4b08ebabae46ac90f89192981e28a6"
+    },
+    // OAuth clients, grants and tokens (@cloudflare/workers-oauth-provider:
+    // client:*, grant:*, token:*). Same namespace as KV; its keys never meet
+    // the vault's or the API keys' prefixes.
+    {
+      "binding": "OAUTH_KV",
+      "id": "6d4b08ebabae46ac90f89192981e28a6"
     }
   ],
   "vars": {
@@ -50,7 +57,10 @@
     "OAUTH_INTROSPECTION_URL": "",
     "OAUTH_CLIENT_ID": "",
     "OAUTH_AUDIENCE": "",
-    "OAUTH_RESOURCE_DOCUMENTATION": ""
+    "OAUTH_RESOURCE_DOCUMENTATION": "",
+    // Turns on the built-in OAuth 2.1 authorization server (connectors in
+    // ChatGPT and Claude). Empty: API keys only.
+    "MCP_RESOURCE_URL": "https://gmail.mcp.xgi.io/"
   },
   "env": {
     "dev": {
@@ -75,7 +85,8 @@
         "OAUTH_INTROSPECTION_URL": "",
         "OAUTH_CLIENT_ID": "",
         "OAUTH_AUDIENCE": "",
-        "OAUTH_RESOURCE_DOCUMENTATION": ""
+        "OAUTH_RESOURCE_DOCUMENTATION": "",
+        "MCP_RESOURCE_URL": ""
       },
       "secrets": {
         "required": ["CREDENTIALS_MASTER_KEY"]

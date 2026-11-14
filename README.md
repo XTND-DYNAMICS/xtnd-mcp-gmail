@@ -80,6 +80,8 @@ npx -y @xtnd-dynamics/mcp-gmail setup --profile work
 
 `xtnd-mcp-gmail` is deployable as a global Streamable HTTP MCP Worker:
 * **Endpoint:** `https://gmail.mcp.xgi.io` (the former `/mcp` path still works as an alias)
+* **Sign-in:** OAuth 2.1 with dynamic client registration and PKCE. Add `https://gmail.mcp.xgi.io` as a custom connector in ChatGPT or Claude with authentication **OAuth**; the sign-in page asks for the Gmail address and an [App Password](https://myaccount.google.com/apppasswords), checks them with Gmail and stores them encrypted. One connector per mailbox. API keys (`Authorization: Bearer <key>`) keep working.
+* **OAuth metadata:** `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`
 * **Discovery Card:** `https://gmail.mcp.xgi.io/.well-known/mcp/server-card.json`
 * **OpenAPI 3.1:** `https://gmail.mcp.xgi.io/openapi.json`
 * **Health Probe:** `https://gmail.mcp.xgi.io/health`
