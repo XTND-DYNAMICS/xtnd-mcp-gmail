@@ -60,14 +60,15 @@
     "prepack": "npm run build",
     "sync:smithery": "tsx scripts/sync-smithery.ts",
     "pretest": "xsuite-stamp --no-dependencies",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --import ./test/support/cloudflare-workers.mjs --test test/*.test.ts",
     "pretest:security": "xsuite-stamp --no-dependencies",
-    "test:security": "tsx --test test/oauth-pkce.test.ts test/local-profile-store.test.ts test/scopes.test.ts test/worker-auth.test.ts",
+    "test:security": "tsx --import ./test/support/cloudflare-workers.mjs --test test/oauth-pkce.test.ts test/local-profile-store.test.ts test/scopes.test.ts test/worker-auth.test.ts",
     "pretest:stdio": "xsuite-stamp --no-dependencies",
     "test:stdio": "tsx scripts/test-local-stdio.ts",
     "typegen": "wrangler types"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.4",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@xtnd-dynamics/xtnd-platform": "^0.15.0",
     "worker-mailer": "^1.3.0",

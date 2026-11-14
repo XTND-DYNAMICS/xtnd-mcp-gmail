@@ -1,7 +1,9 @@
 import { AppPasswordGmailClient } from '../core/app-password-client.js';
 import { GetEmailContentSchema, SearchEmailsSchema, SendEmailSchema } from '../mcp/schemas.js';
 import type { GmailAppPasswordCredentials, WorkerEnv } from '../types.js';
-import { handleAccountLinkRoute } from './account-link.js';
+import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
+import { handleAccountLinkRoute, type MailboxVerifier } from './account-link.js';
+import { handleAuthorize, MAIL_SCOPES, type OAuthGrantProps } from './oauth-authorize.js';
 import {
   authenticateRequest,
   isOAuthConfigured,
@@ -21,159 +23,292 @@ import { BUILD_STAMP } from '../version.generated.js';
 
 /** GET /health and GET /version, as every XSuite API serves them (AGENTS.md §3), from the build stamp. */
 const versioned = versionRoutes(BUILD_STAMP);
-const MAIL_SCOPES = ['mail.read', 'mail.manage', 'mail.send', 'mail.delete'] as const;
 
-export default {
-  async fetch(request: Request, env: WorkerEnv, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    const finish = (response: Response) => applyResponseSecurity(response, request, env);
+export interface WorkerDependencies {
+  /** Verifies a mailbox at sign-in; the default logs in to Gmail over IMAP. */
+  verifyMailbox?: MailboxVerifier;
+}
 
-    try {
-      if (request.method === 'OPTIONS') {
-        return finish(corsPreflight(request, env));
-      }
+/** The Worker. `createWorker()` exists so tests can replace the Gmail login check. */
+export function createWorker(deps: WorkerDependencies = {}) {
+  let provider: { resource: string; instance: OAuthProvider<WorkerEnv> } | null = null;
 
-      const versionResponse = await versioned(request);
-      if (versionResponse) {
-        return finish(versionResponse);
-      }
-
-      if (url.pathname === '/openapi.json' && request.method === 'GET') {
-        return finish(json(getOpenApiSpec(url.origin)));
-      }
-
-      if (url.pathname === '/.well-known/mcp/server-card.json' && request.method === 'GET') {
-        return finish(json(serverCard()));
-      }
-
-      if (
-        (url.pathname === '/.well-known/oauth-protected-resource'
-          || url.pathname === '/.well-known/oauth-protected-resource/mcp')
-        && request.method === 'GET'
-      ) {
-        if (!isOAuthConfigured(env)) {
-          return finish(json({ error: 'OAuth discovery is not configured for this deployment.' }, 404));
-        }
-        return finish(json({
-          resource: env.OAUTH_AUDIENCE,
-          authorization_servers: [env.OAUTH_AUTHORIZATION_SERVER],
-          scopes_supported: [...MAIL_SCOPES],
-          ...(env.OAUTH_RESOURCE_DOCUMENTATION
-            ? { resource_documentation: env.OAUTH_RESOURCE_DOCUMENTATION }
-            : {}),
-        }));
-      }
-
-      // Root developer documentation landing page. The MCP endpoint also lives
-      // at the root, so a GET that asks for an event stream is MCP, not HTML.
-      if (
-        url.pathname === '/'
-        && request.method === 'GET'
-        && !(request.headers.get('Accept') ?? '').includes('text/event-stream')
-      ) {
-        return finish(new Response(getLandingHtml(), {
-          headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        }));
-      }
-
-      // Every operational endpoint, including /mcp, authenticates before mailbox resolution.
-      const auth = await authenticateRequest(request, env);
-      if (!auth.authenticated) {
-        if (auth.status === 503) {
-          return finish(json({ error: auth.error }, 503));
-        }
-        return finish(unauthorized(auth.error, request, env));
-      }
-      const principal = auth.principal;
-
-      if (url.pathname.startsWith('/api/accounts/')) {
-        if (!hasScope(principal, 'mail.manage')) {
-          return finish(forbiddenScope('mail.manage'));
-        }
-        const accountResponse = await handleAccountLinkRoute(request, env, principal);
-        if (accountResponse) return finish(accountResponse);
-        return finish(json({ error: 'Not Found' }, 404));
-      }
-
-      // The connection URL is the bare origin; /mcp stays as an alias so
-      // existing clients keep working.
-      if (url.pathname === '/' || url.pathname === '/mcp') {
-        return finish(await handleMcpStreamableHttp(request, {
-          subject: principal.subject,
-          scopes: principal.scopes ?? [],
-          resolveCredentials: () => resolveCredentials(request, env, principal.subject),
-          enableLegacySse: isEnabled(env.ENABLE_LEGACY_SSE),
-        }));
-      }
-
-      if (url.pathname === '/sse' && request.method === 'GET') {
-        if (!isEnabled(env.ENABLE_LEGACY_SSE)) {
-          return finish(json({ error: 'Legacy SSE transport is disabled. Use /mcp.' }, 410));
-        }
-        const missingScope = MAIL_SCOPES.find((scope) => !hasScope(principal, scope));
-        if (missingScope) return finish(forbiddenScope(missingScope));
-        const credentials = await resolveCredentials(request, env, principal.subject);
-        if (!credentials) return finish(accountNotLinked());
-        return finish(await handleSseConnect(request, credentials, principal.subject));
-      }
-
-      if (url.pathname === '/message' && request.method === 'POST') {
-        if (!isEnabled(env.ENABLE_LEGACY_SSE)) {
-          return finish(json({ error: 'Legacy SSE transport is disabled. Use /mcp.' }, 410));
-        }
-        return finish(await handleMessagePost(request, principal.subject));
-      }
-
-      if (url.pathname === '/api/folders' && request.method === 'GET') {
-        if (!hasScope(principal, 'mail.read')) return finish(forbiddenScope('mail.read'));
-        const credentials = await resolveCredentials(request, env, principal.subject);
-        if (!credentials) return finish(accountNotLinked());
-        const client = new AppPasswordGmailClient(credentials);
-        return finish(json({ folders: await client.listFolders() }));
-      }
-
-      if (url.pathname === '/api/emails/search' && request.method === 'POST') {
-        if (!hasScope(principal, 'mail.read')) return finish(forbiddenScope('mail.read'));
-        const body = SearchEmailsSchema.parse(await readRequestJson(request, 1_048_576));
-        const credentials = await resolveCredentials(request, env, principal.subject);
-        if (!credentials) return finish(accountNotLinked());
-        const client = new AppPasswordGmailClient(credentials);
-        return finish(json(await client.searchEmails(body as any)));
-      }
-
-      if (url.pathname.startsWith('/api/emails/') && request.method === 'GET') {
-        if (!hasScope(principal, 'mail.read')) return finish(forbiddenScope('mail.read'));
-        const uid = Number(url.pathname.slice('/api/emails/'.length));
-        const folder = url.searchParams.get('folder') || 'INBOX';
-        const input = GetEmailContentSchema.parse({ folder, uid });
-        const credentials = await resolveCredentials(request, env, principal.subject);
-        if (!credentials) return finish(accountNotLinked());
-        const client = new AppPasswordGmailClient(credentials);
-        return finish(json(await client.getEmailContent(input.folder, input.uid)));
-      }
-
-      if (url.pathname === '/api/emails/send' && request.method === 'POST') {
-        if (!hasScope(principal, 'mail.send')) return finish(forbiddenScope('mail.send'));
-        const body = SendEmailSchema.parse(await readRequestJson(request, 3_145_728));
-        const credentials = await resolveCredentials(request, env, principal.subject);
-        if (!credentials) return finish(accountNotLinked());
-        const client = new AppPasswordGmailClient(credentials);
-        return finish(json(await client.sendEmail(body as any)));
-      }
-
-      return finish(json({ error: 'Not Found' }, 404));
-    } catch (error) {
-      if (error instanceof CredentialResolutionError) {
-        return finish(json({ error: 'The hosted credential vault is unavailable.' }, 503));
-      }
-      if (error instanceof RequestBodyTooLargeError) {
-        return finish(json({ error: 'The request body is too large.' }, 413));
-      }
-      const errorName = error instanceof Error ? error.name : 'UnknownError';
-      return finish(json({ error: 'Internal Server Error', errorName }, 500));
+  const oauthProvider = (resource: string): OAuthProvider<WorkerEnv> => {
+    if (provider?.resource !== resource) {
+      provider = { resource, instance: buildOAuthProvider(resource, deps) };
     }
-  },
-};
+    return provider.instance;
+  };
+
+  return {
+    async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+      const finish = (response: Response) => applyResponseSecurity(response, request, env);
+      try {
+        const resource = oauthResource(env);
+        const publicResponse = await publicRoute(request, env, resource !== null);
+        if (publicResponse) return finish(publicResponse);
+
+        if (resource) {
+          // Built-in OAuth 2.1 authorization server: discovery, registration,
+          // token and /authorize; API keys still work through resolveExternalToken.
+          return finish(await oauthProvider(resource).fetch(request, env, ctx));
+        }
+
+        // Every operational endpoint authenticates before mailbox resolution.
+        const auth = await authenticateRequest(request, env);
+        if (!auth.authenticated) {
+          if (auth.status === 503) return finish(json({ error: auth.error }, 503));
+          return finish(unauthorized(auth.error, request, env));
+        }
+        return finish(await protectedRoute(request, env, auth.principal));
+      } catch (error) {
+        return finish(errorResponse(error));
+      }
+    },
+  };
+}
+
+export default createWorker();
+
+/** The configured resource URL, or null when the built-in authorization server is off. */
+function oauthResource(env: WorkerEnv): string | null {
+  const configured = String(env.MCP_RESOURCE_URL ?? '').trim();
+  if (!configured) return null;
+  const url = new URL(configured);
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) {
+    throw new Error('MCP_RESOURCE_URL must be an https URL without credentials, query or fragment.');
+  }
+  if (!env.OAUTH_KV) throw new Error('MCP_RESOURCE_URL is set but the OAUTH_KV binding is missing.');
+  return url.href;
+}
+
+function buildOAuthProvider(resource: string, deps: WorkerDependencies): OAuthProvider<WorkerEnv> {
+  const origin = new URL(resource).origin;
+  return new OAuthProvider<WorkerEnv>({
+    // '/' matches the bare origin only; '/api' matches /api and /api/*.
+    apiRoute: ['/', '/mcp', '/api', '/sse', '/message'],
+    apiHandler: {
+      async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+        try {
+          return await protectedRoute(request, env, principalFromContext(ctx));
+        } catch (error) {
+          return errorResponse(error);
+        }
+      },
+    },
+    defaultHandler: {
+      async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+        if (new URL(request.url).pathname === '/authorize') {
+          return handleAuthorize(request, env, { verifyMailbox: deps.verifyMailbox });
+        }
+        return json({ error: 'Not Found' }, 404);
+      },
+    },
+    authorizeEndpoint: '/authorize',
+    tokenEndpoint: '/oauth/token',
+    clientRegistrationEndpoint: '/oauth/register',
+    scopesSupported: [...MAIL_SCOPES],
+    requiredScopes: [...MAIL_SCOPES],
+    resourceMetadata: {
+      resource,
+      authorization_servers: [origin],
+      resource_name: 'XTND | MCP | GMAIL',
+    },
+    accessTokenTTL: 3_600,
+    // A connector stays connected while it is used; it lapses after 90 idle days.
+    refreshTokenTTL: 90 * 24 * 3_600,
+    resolveExternalToken: async ({ token, request, env }) => {
+      // API keys (KV apikey:<sha256> or API_KEYS_SHA256) keep working beside OAuth.
+      const headers = new Headers({ Authorization: `Bearer ${token}` });
+      const result = await authenticateRequest(new Request(request.url, { headers }), env);
+      if (!result.authenticated) {
+        if (result.status === 503) throw new Error(result.error);
+        return null;
+      }
+      const props: ApiKeyProps = {
+        source: 'api-key',
+        subject: result.principal.subject,
+        tokenHash: result.principal.tokenHash,
+        scopes: result.principal.scopes ?? [],
+      };
+      return { props, audience: resource };
+    },
+  } as ConstructorParameters<typeof OAuthProvider<WorkerEnv>>[0]);
+}
+
+interface ApiKeyProps {
+  source: 'api-key';
+  subject: string;
+  tokenHash: string;
+  scopes: string[];
+}
+
+function principalFromContext(ctx: ExecutionContext): AuthenticatedPrincipal {
+  const props = (ctx as unknown as { props?: OAuthGrantProps | ApiKeyProps }).props;
+  const auth = (ctx as unknown as { auth?: { scope?: string[] } }).auth;
+  if (props?.source === 'oauth-grant' && typeof props.subject === 'string') {
+    return { subject: props.subject, tokenHash: '', scopes: [...(auth?.scope ?? [])], source: 'oauth' };
+  }
+  if (props?.source === 'api-key' && typeof props.subject === 'string') {
+    return { subject: props.subject, tokenHash: props.tokenHash, scopes: [...props.scopes], source: 'kv' };
+  }
+  throw new Error('The authenticated request carries no usable identity.');
+}
+
+/** Unauthenticated routes: health, version, documents, discovery and the landing page. */
+async function publicRoute(request: Request, env: WorkerEnv, oauthEnabled: boolean): Promise<Response | null> {
+  const url = new URL(request.url);
+
+  if (request.method === 'OPTIONS') {
+    // The provider answers preflight for its own endpoints.
+    const providerPath = url.pathname.startsWith('/.well-known/oauth-') || url.pathname.startsWith('/oauth/');
+    if (!(oauthEnabled && providerPath)) return corsPreflight(request, env);
+    return null;
+  }
+
+  const versionResponse = await versioned(request);
+  if (versionResponse) return versionResponse;
+
+  if (url.pathname === '/openapi.json' && request.method === 'GET') {
+    return json(getOpenApiSpec(url.origin));
+  }
+
+  if (url.pathname === '/.well-known/mcp/server-card.json' && request.method === 'GET') {
+    return json(serverCard());
+  }
+
+  if (
+    !oauthEnabled
+    && (url.pathname === '/.well-known/oauth-protected-resource'
+      || url.pathname === '/.well-known/oauth-protected-resource/mcp')
+    && request.method === 'GET'
+  ) {
+    if (!isOAuthConfigured(env)) {
+      return json({ error: 'OAuth discovery is not configured for this deployment.' }, 404);
+    }
+    return json({
+      resource: env.OAUTH_AUDIENCE,
+      authorization_servers: [env.OAUTH_AUTHORIZATION_SERVER],
+      scopes_supported: [...MAIL_SCOPES],
+      ...(env.OAUTH_RESOURCE_DOCUMENTATION
+        ? { resource_documentation: env.OAUTH_RESOURCE_DOCUMENTATION }
+        : {}),
+    });
+  }
+
+  // The landing page, for a browser. The MCP endpoint also lives at the root,
+  // so a GET with credentials or one asking for an event stream is MCP.
+  if (
+    url.pathname === '/'
+    && request.method === 'GET'
+    && !request.headers.has('Authorization')
+    && !(request.headers.get('Accept') ?? '').includes('text/event-stream')
+  ) {
+    return new Response(getLandingHtml(), {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
+  return null;
+}
+
+/** Authenticated routes. `principal` came from an API key or an OAuth grant. */
+async function protectedRoute(
+  request: Request,
+  env: WorkerEnv,
+  principal: AuthenticatedPrincipal,
+): Promise<Response> {
+  const url = new URL(request.url);
+
+    if (url.pathname.startsWith('/api/accounts/')) {
+      if (!hasScope(principal, 'mail.manage')) {
+        return (forbiddenScope('mail.manage'));
+      }
+      const accountResponse = await handleAccountLinkRoute(request, env, principal);
+      if (accountResponse) return (accountResponse);
+      return (json({ error: 'Not Found' }, 404));
+    }
+
+    // The connection URL is the bare origin; /mcp stays as an alias so
+    // existing clients keep working.
+    if (url.pathname === '/' || url.pathname === '/mcp') {
+      return (await handleMcpStreamableHttp(request, {
+        subject: principal.subject,
+        scopes: principal.scopes ?? [],
+        resolveCredentials: () => resolveCredentials(request, env, principal.subject),
+        enableLegacySse: isEnabled(env.ENABLE_LEGACY_SSE),
+      }));
+    }
+
+    if (url.pathname === '/sse' && request.method === 'GET') {
+      if (!isEnabled(env.ENABLE_LEGACY_SSE)) {
+        return (json({ error: 'Legacy SSE transport is disabled. Use /mcp.' }, 410));
+      }
+      const missingScope = MAIL_SCOPES.find((scope) => !hasScope(principal, scope));
+      if (missingScope) return (forbiddenScope(missingScope));
+      const credentials = await resolveCredentials(request, env, principal.subject);
+      if (!credentials) return (accountNotLinked());
+      return (await handleSseConnect(request, credentials, principal.subject));
+    }
+
+    if (url.pathname === '/message' && request.method === 'POST') {
+      if (!isEnabled(env.ENABLE_LEGACY_SSE)) {
+        return (json({ error: 'Legacy SSE transport is disabled. Use /mcp.' }, 410));
+      }
+      return (await handleMessagePost(request, principal.subject));
+    }
+
+    if (url.pathname === '/api/folders' && request.method === 'GET') {
+      if (!hasScope(principal, 'mail.read')) return (forbiddenScope('mail.read'));
+      const credentials = await resolveCredentials(request, env, principal.subject);
+      if (!credentials) return (accountNotLinked());
+      const client = new AppPasswordGmailClient(credentials);
+      return (json({ folders: await client.listFolders() }));
+    }
+
+    if (url.pathname === '/api/emails/search' && request.method === 'POST') {
+      if (!hasScope(principal, 'mail.read')) return (forbiddenScope('mail.read'));
+      const body = SearchEmailsSchema.parse(await readRequestJson(request, 1_048_576));
+      const credentials = await resolveCredentials(request, env, principal.subject);
+      if (!credentials) return (accountNotLinked());
+      const client = new AppPasswordGmailClient(credentials);
+      return (json(await client.searchEmails(body as any)));
+    }
+
+    if (url.pathname.startsWith('/api/emails/') && request.method === 'GET') {
+      if (!hasScope(principal, 'mail.read')) return (forbiddenScope('mail.read'));
+      const uid = Number(url.pathname.slice('/api/emails/'.length));
+      const folder = url.searchParams.get('folder') || 'INBOX';
+      const input = GetEmailContentSchema.parse({ folder, uid });
+      const credentials = await resolveCredentials(request, env, principal.subject);
+      if (!credentials) return (accountNotLinked());
+      const client = new AppPasswordGmailClient(credentials);
+      return (json(await client.getEmailContent(input.folder, input.uid)));
+    }
+
+    if (url.pathname === '/api/emails/send' && request.method === 'POST') {
+      if (!hasScope(principal, 'mail.send')) return (forbiddenScope('mail.send'));
+      const body = SendEmailSchema.parse(await readRequestJson(request, 3_145_728));
+      const credentials = await resolveCredentials(request, env, principal.subject);
+      if (!credentials) return (accountNotLinked());
+      const client = new AppPasswordGmailClient(credentials);
+      return (json(await client.sendEmail(body as any)));
+    }
+
+    return (json({ error: 'Not Found' }, 404));
+  return json({ error: 'Not Found' }, 404);
+}
+
+function errorResponse(error: unknown): Response {
+    if (error instanceof CredentialResolutionError) {
+      return (json({ error: 'The hosted credential vault is unavailable.' }, 503));
+    }
+    if (error instanceof RequestBodyTooLargeError) {
+      return (json({ error: 'The request body is too large.' }, 413));
+    }
+    const errorName = error instanceof Error ? error.name : 'UnknownError';
+    return (json({ error: 'Internal Server Error', errorName }, 500));
+}
 
 async function resolveCredentials(
   request: Request,
@@ -284,8 +419,10 @@ function serverCard(): Record<string, unknown> {
     homepage: 'https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail#readme',
     repository: 'https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail',
     authentication: {
-      type: 'bearer',
-      accountLinking: '/api/accounts/link',
+      type: 'oauth2',
+      oauthProtectedResource: '/.well-known/oauth-protected-resource',
+      apiKeys: 'Authorization: Bearer <key>',
+      accountLinking: '/authorize (OAuth sign-in) or /api/accounts/link (API keys)',
       rawMailboxCredentialHeaders: 'disabled by default',
     },
     tools: [

@@ -283,4 +283,14 @@ export interface WorkerEnv {
   OAUTH_CLIENT_SECRET?: string | WorkerSecretBinding;
   OAUTH_AUDIENCE?: string;
   OAUTH_RESOURCE_DOCUMENTATION?: string;
+  /**
+   * Canonical resource URL of this MCP server (RFC 9728 `resource`), e.g.
+   * `https://gmail.mcp.xgi.io/`. Setting it turns on the built-in OAuth 2.1
+   * authorization server; empty leaves API keys as the only credential.
+   */
+  MCP_RESOURCE_URL?: string;
+  /** KV namespace for OAuth clients, grants and tokens (@cloudflare/workers-oauth-provider). */
+  OAUTH_KV?: any;
+  /** OAuth helpers injected by the provider into default-handler requests. */
+  OAUTH_PROVIDER?: any;
 }
