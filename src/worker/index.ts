@@ -64,8 +64,13 @@ export default {
         }));
       }
 
-      // Root developer documentation landing page
-      if (url.pathname === '/' && request.method === 'GET') {
+      // Root developer documentation landing page. The MCP endpoint also lives
+      // at the root, so a GET that asks for an event stream is MCP, not HTML.
+      if (
+        url.pathname === '/'
+        && request.method === 'GET'
+        && !(request.headers.get('Accept') ?? '').includes('text/event-stream')
+      ) {
         return finish(new Response(getLandingHtml(), {
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
         }));
@@ -90,7 +95,9 @@ export default {
         return finish(json({ error: 'Not Found' }, 404));
       }
 
-      if (url.pathname === '/mcp') {
+      // The connection URL is the bare origin; /mcp stays as an alias so
+      // existing clients keep working.
+      if (url.pathname === '/' || url.pathname === '/mcp') {
         return finish(await handleMcpStreamableHttp(request, {
           subject: principal.subject,
           scopes: principal.scopes ?? [],
@@ -323,7 +330,7 @@ function getLandingHtml(): string {
     <div class="card">
       <h2>Endpoints</h2>
       <ul>
-        <li><strong>Streamable HTTP MCP:</strong> <code>POST /mcp</code></li>
+        <li><strong>Streamable HTTP MCP:</strong> <code>POST /</code> (alias: <code>/mcp</code>)</li>
         <li><strong>Server Card:</strong> <a href="/.well-known/mcp/server-card.json"><code>/.well-known/mcp/server-card.json</code></a></li>
         <li><strong>OpenAPI 3.1:</strong> <a href="/openapi.json"><code>/openapi.json</code></a></li>
         <li><strong>Health Check:</strong> <a href="/health"><code>/health</code></a></li>

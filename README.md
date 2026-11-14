@@ -79,7 +79,7 @@ npx -y @xtnd-dynamics/mcp-gmail setup --profile work
 ## ☁️ Hosted Cloudflare Worker Endpoint
 
 `xtnd-mcp-gmail` is deployable as a global Streamable HTTP MCP Worker:
-* **Endpoint:** `https://gmail.mcp.xgi.io/mcp`
+* **Endpoint:** `https://gmail.mcp.xgi.io` (the former `/mcp` path still works as an alias)
 * **Discovery Card:** `https://gmail.mcp.xgi.io/.well-known/mcp/server-card.json`
 * **OpenAPI 3.1:** `https://gmail.mcp.xgi.io/openapi.json`
 * **Health Probe:** `https://gmail.mcp.xgi.io/health`
