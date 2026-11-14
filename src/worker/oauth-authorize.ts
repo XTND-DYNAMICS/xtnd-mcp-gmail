@@ -17,16 +17,21 @@ import { sha256Hex } from './auth.js';
 import { credentialVaultFromEnv } from './credential-resolver.js';
 
 export const MAIL_SCOPES = ['mail.read', 'mail.manage', 'mail.send', 'mail.delete'] as const;
+export const OIDC_SCOPES = ['openid', 'profile', 'email', 'offline_access'] as const;
+export const SUPPORTED_OAUTH_SCOPES = [...OIDC_SCOPES, ...MAIL_SCOPES] as const;
+export const ADVERTISED_RESOURCE_SCOPES = ['openid', 'profile', 'email', ...MAIL_SCOPES] as const;
 
 /** Failed sign-ins allowed per mailbox inside the window before the page refuses. */
 const MAX_FAILED_ATTEMPTS = 5;
 const FAILED_ATTEMPT_WINDOW_SECONDS = 900;
 const MAX_FORM_BYTES = 16_384;
+const MAX_NONCE_CHARS = 512;
 
 export interface OAuthGrantProps {
   source: 'oauth-grant';
   subject: string;
   email: string;
+  nonce?: string;
 }
 
 export interface AuthorizeDependencies {
@@ -56,9 +61,11 @@ export async function handleAuthorize(
     } catch (error) {
       return authorizationFailure(error);
     }
+    const rawNonce = new URL(request.url).searchParams.get('nonce') ?? '';
+    const nonce = rawNonce.length > 0 && rawNonce.length <= MAX_NONCE_CHARS ? rawNonce : undefined;
     const details: ConsentDescription = await oauth.describeConsent(authRequest);
     const consent = await oauth.beginConsent(authRequest);
-    return page(consentPage(details, consent.handle), 200, consent.headers);
+    return page(consentPage(details, consent.handle, undefined, nonce), 200, consent.headers);
   }
 
   if (request.method !== 'POST') {
@@ -69,6 +76,8 @@ export async function handleAuthorize(
   if (declared > MAX_FORM_BYTES) return text('The sign-in form is too large.', 413);
   const form = await request.formData();
   const handle = String(form.get('handle') ?? '');
+  const rawNonce = String(form.get('nonce') ?? '');
+  const nonce = rawNonce.length > 0 && rawNonce.length <= MAX_NONCE_CHARS ? rawNonce : undefined;
 
   try {
     if (form.get('decision') !== 'approve') {
@@ -84,7 +93,7 @@ export async function handleAuthorize(
         appPassword: String(form.get('appPassword') ?? '').replace(/\s+/g, ''),
       }, env);
     } catch (error) {
-      return rerender(request, env, handle, error instanceof Error ? error.message : 'The mailbox credentials are invalid.');
+      return rerender(request, env, handle, error instanceof Error ? error.message : 'The mailbox credentials are invalid.', nonce);
     }
 
     const vault = await credentialVaultFromEnv(env);
@@ -93,7 +102,7 @@ export async function handleAuthorize(
     const failureKey = `oauth-signin-failures:${await sha256Hex(credentials.email)}`;
     const failures = Number((await env.KV.get(failureKey)) ?? '0');
     if (failures >= MAX_FAILED_ATTEMPTS) {
-      return rerender(request, env, handle, 'Too many failed sign-ins for this mailbox. Wait 15 minutes and try again.');
+      return rerender(request, env, handle, 'Too many failed sign-ins for this mailbox. Wait 15 minutes and try again.', nonce);
     }
 
     try {
@@ -105,27 +114,36 @@ export async function handleAuthorize(
         env,
         handle,
         'Gmail did not accept that address and App Password. Check both; an App Password is 16 letters from myaccount.google.com/apppasswords.',
+        nonce,
       );
     }
     if (failures > 0) await env.KV.delete(failureKey);
 
     const requested = form.getAll('scope').map(String);
-    const scope = MAIL_SCOPES.filter((candidate) => requested.includes(candidate));
-    if (scope.length === 0) {
-      return rerender(request, env, handle, 'Choose at least one permission.');
+    const mailScope = MAIL_SCOPES.filter((candidate) => requested.includes(candidate));
+    if (mailScope.length === 0) {
+      return rerender(request, env, handle, 'Choose at least one permission.', nonce);
     }
+    const oidcScope = OIDC_SCOPES.filter((candidate) => candidate !== 'offline_access' || requested.includes('offline_access'));
+    const scope = [...oidcScope, ...mailScope];
 
     const approved = await oauth.approveConsent(request, handle, { scope });
     const subject = await oauthSubjectFor(credentials.email);
     await vault.save(subject, credentials);
 
-    const props: OAuthGrantProps = { source: 'oauth-grant', subject, email: credentials.email };
+    const props: OAuthGrantProps = {
+      source: 'oauth-grant',
+      subject,
+      email: credentials.email,
+      ...(nonce ? { nonce } : {}),
+    };
     const { redirectTo } = await oauth.completeAuthorization({
       request: approved.request,
       userId: subject,
       metadata: { email: credentials.email },
       scope: approved.request.scope,
       props,
+      revokeExistingGrants: false,
     });
     approved.headers.set('Location', redirectTo);
     return new Response(null, { status: 302, headers: approved.headers });
@@ -135,11 +153,11 @@ export async function handleAuthorize(
 }
 
 /** Show the form again with an error. The handle is unconsumed, so the same browser can retry. */
-async function rerender(request: Request, env: WorkerEnv, handle: string, message: string): Promise<Response> {
+async function rerender(request: Request, env: WorkerEnv, handle: string, message: string, nonce?: string): Promise<Response> {
   const oauth = env.OAUTH_PROVIDER;
   const authRequest: AuthRequest = await oauth.parseAuthRequest(request);
   const details: ConsentDescription = await oauth.describeConsent(authRequest);
-  return page(consentPage(details, handle, message), 400, new Headers());
+  return page(consentPage(details, handle, message, nonce), 400, new Headers());
 }
 
 /** AuthorizationError: redirect to the client once it is validated, else show the reason. Anything else is a fault. */
@@ -160,15 +178,23 @@ const SCOPE_LABELS: Record<string, string> = {
   'mail.delete': 'Move mail to Trash and delete it',
 };
 
-function consentPage(details: ConsentDescription, handle: string, error?: string): string {
+function consentPage(details: ConsentDescription, handle: string, error?: string, nonce?: string): string {
   const name = escape(details.clientName || 'An application');
   const origin = details.clientDomain
     ? `Published by <strong>${escape(details.clientDomain)}</strong>.`
     : 'This app registered itself; its name is not verified.';
   const requested = details.scope.length > 0 ? details.scope : [...MAIL_SCOPES];
+  const hasMailScope = MAIL_SCOPES.some((scope) => requested.includes(scope));
+  const effectiveRequested = hasMailScope ? requested : [...requested, ...MAIL_SCOPES];
   const scopes = MAIL_SCOPES.map((scope) => `
-        <label class="scope"><input type="checkbox" name="scope" value="${scope}"${requested.includes(scope) ? ' checked' : ''}>
+        <label class="scope"><input type="checkbox" name="scope" value="${scope}"${effectiveRequested.includes(scope) ? ' checked' : ''}>
           <span><code>${scope}</code> ${escape(SCOPE_LABELS[scope])}</span></label>`).join('');
+  const hiddenOffline = details.scope.includes('offline_access')
+    ? '\n      <input type="hidden" name="scope" value="offline_access">'
+    : '';
+  const hiddenNonce = nonce
+    ? `\n      <input type="hidden" name="nonce" value="${escape(nonce)}">`
+    : '';
 
   return `<!doctype html>
 <html lang="en">
@@ -204,7 +230,7 @@ function consentPage(details: ConsentDescription, handle: string, error?: string
     ${details.redirectIsLoopback ? '<p class="warn"><strong>This sends access to an app on your computer.</strong> Continue only if you just started connecting from it.</p>' : ''}
     ${error ? `<p class="error" role="alert">${escape(error)}</p>` : ''}
     <form method="post" autocomplete="off">
-      <input type="hidden" name="handle" value="${escape(handle)}">
+      <input type="hidden" name="handle" value="${escape(handle)}">${hiddenOffline}${hiddenNonce}
       <label for="email">Gmail address</label>
       <input id="email" name="email" type="email" required autocomplete="username" placeholder="name@example.com">
       <label for="appPassword">App Password</label>

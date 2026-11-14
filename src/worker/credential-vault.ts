@@ -267,7 +267,7 @@ function parseRecord(stored: string): EncryptedCredentialRecordV1 {
   };
 }
 
-function decodeMasterKey(secret: string): Uint8Array {
+export function decodeMasterKey(secret: string): Uint8Array {
   if (typeof secret !== 'string') {
     throw invalidMasterKey();
   }
