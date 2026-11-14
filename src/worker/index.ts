@@ -1,5 +1,6 @@
 import { AppPasswordGmailClient } from '../core/app-password-client.js';
 import { APP_PASSWORD_TOOL_NAMES } from '../mcp/app-password-server.js';
+import { brandIconsForOrigin, serveBrandIconRoute } from '../mcp/brand-icons.js';
 import { GetEmailContentSchema, SearchEmailsSchema, SendEmailSchema } from '../mcp/schemas.js';
 import type { GmailAppPasswordCredentials, WorkerEnv } from '../types.js';
 import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
@@ -43,6 +44,9 @@ export function createWorker(deps: WorkerDependencies = {}) {
 
   return {
     async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+      const iconResponse = serveBrandIconRoute(new URL(request.url).pathname, request.method);
+      if (iconResponse) return iconResponse;
+
       const finish = (response: Response) => applyResponseSecurity(response, request, env);
       try {
         const resource = oauthResource(env);
@@ -113,7 +117,10 @@ function buildOAuthProvider(resource: string, deps: WorkerDependencies): OAuthPr
     resourceMetadata: {
       resource,
       authorization_servers: [origin],
-      resource_name: 'XTND | MCP | GMAIL',
+      resource_name: 'XMAIL | Gmail',
+      logo_uri: `${origin}/favicon.svg`,
+      icons: brandIconsForOrigin(origin),
+      resource_documentation: 'https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail#readme',
     },
     accessTokenTTL: 3_600,
     // A connector stays connected while it is used; it lapses after 90 idle days.
@@ -175,7 +182,7 @@ async function publicRoute(request: Request, env: WorkerEnv, oauthEnabled: boole
   }
 
   if (url.pathname === '/.well-known/mcp/server-card.json' && request.method === 'GET') {
-    return json(serverCard());
+    return json(serverCard(url.origin));
   }
 
   if (
@@ -189,8 +196,11 @@ async function publicRoute(request: Request, env: WorkerEnv, oauthEnabled: boole
     }
     return json({
       resource: env.OAUTH_AUDIENCE,
+      resource_name: 'XMAIL | Gmail',
       authorization_servers: [env.OAUTH_AUTHORIZATION_SERVER],
       scopes_supported: [...MAIL_SCOPES],
+      logo_uri: `${url.origin}/favicon.svg`,
+      icons: brandIconsForOrigin(url.origin),
       ...(env.OAUTH_RESOURCE_DOCUMENTATION
         ? { resource_documentation: env.OAUTH_RESOURCE_DOCUMENTATION }
         : {}),
@@ -411,10 +421,18 @@ function json(
   });
 }
 
-function serverCard(): Record<string, unknown> {
+function serverCard(origin: string): Record<string, unknown> {
+  const icons = brandIconsForOrigin(origin);
   return {
-    serverInfo: { name: 'XTND | MCP | GMAIL', version: BUILD_STAMP.version },
-    icon: 'https://raw.githubusercontent.com/XTND-DYNAMICS/xtnd-mcp-gmail/main/assets/icon.svg',
+    serverInfo: {
+      name: 'XTND | MCP | GMAIL',
+      title: 'XMAIL | Gmail',
+      version: BUILD_STAMP.version,
+      websiteUrl: origin,
+      icons,
+    },
+    icon: `${origin}/favicon.svg`,
+    icons,
     description: 'Supreme MCP server for Gmail and Google Workspace with dual-mode App Password & OAuth2 support.',
     homepage: 'https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail#readme',
     repository: 'https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail',
@@ -435,7 +453,10 @@ function getLandingHtml(): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>XTND | MCP | GMAIL</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <title>XMAIL | Gmail — MCP Server</title>
   <style>
     :root { --bg: #090d16; --card: #121827; --text: #e2e8f0; --accent: #ea4335; --accent-glow: rgba(234,67,53,0.2); --code-bg: #0d121f; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; margin: 0; padding: 40px 20px; }

@@ -17,18 +17,24 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { DEFAULT_NEGOTIATED_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { MAIL_SCOPES } from '../mcp/app-password-server.js';
+import { brandIconsForOrigin } from '../mcp/brand-icons.js';
 import type { GmailAppPasswordCredentials } from '../types.js';
 import { readRequestJson, RequestBodyTooLargeError } from './request-body.js';
 import { handleSseConnect } from './sse-handler.js';
 import { createHostedToolServer } from './tool-server.js';
 import { BUILD_STAMP } from '../version.generated.js';
 
-const SERVER_INFO = {
-  name: '@xtnd-dynamics/mcp-gmail',
-  version: BUILD_STAMP.version,
-};
+function buildServerInfo(origin: string) {
+  return {
+    name: '@xtnd-dynamics/mcp-gmail',
+    title: 'XMAIL | Gmail',
+    version: BUILD_STAMP.version,
+    websiteUrl: origin,
+    icons: brandIconsForOrigin(origin),
+  };
+}
 
-const PROTOCOL_VERSION = '2024-11-05';
+const PROTOCOL_VERSION = '2025-11-25';
 const MAX_MCP_REQUEST_BYTES = 1_048_576;
 const EMPTY_EVENT_METHODS = new Set(['ai.smithery/events/list', 'events/list', 'triggers/list']);
 
@@ -112,6 +118,7 @@ export async function handleMcpStreamableHttp(
     }
 
     // Server capabilities discovery response
+    const origin = new URL(request.url).origin;
     return new Response(
       JSON.stringify({
         jsonrpc: '2.0',
@@ -122,7 +129,7 @@ export async function handleMcpStreamableHttp(
             prompts: { listChanged: false },
             resources: { listChanged: false },
           },
-          serverInfo: SERVER_INFO,
+          serverInfo: buildServerInfo(origin),
         },
       }),
       { headers: { 'Content-Type': 'application/json' } },
@@ -161,6 +168,7 @@ export async function handleMcpStreamableHttp(
     const server = createHostedToolServer({
       scopes: context.scopes,
       resolveCredentials: context.resolveCredentials,
+      origin: new URL(request.url).origin,
     });
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
