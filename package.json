@@ -1,6 +1,6 @@
 {
   "name": "@xtnd-dynamics/mcp-gmail",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Secure MCP server for Gmail with OAuth2 desktop profiles and an encrypted hosted credential vault.",
   "license": "MIT",
   "author": "XTND Dynamics",
