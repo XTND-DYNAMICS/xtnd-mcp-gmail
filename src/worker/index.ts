@@ -3,9 +3,16 @@ import { APP_PASSWORD_TOOL_NAMES } from '../mcp/app-password-server.js';
 import { brandIconsForOrigin, serveBrandIconRoute } from '../mcp/brand-icons.js';
 import { GetEmailContentSchema, SearchEmailsSchema, SendEmailSchema } from '../mcp/schemas.js';
 import type { GmailAppPasswordCredentials, WorkerEnv } from '../types.js';
-import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
+import { OAuthProvider, type OAuthProviderOptions } from '@cloudflare/workers-oauth-provider';
 import { handleAccountLinkRoute, type MailboxVerifier } from './account-link.js';
-import { handleAuthorize, MAIL_SCOPES, type OAuthGrantProps } from './oauth-authorize.js';
+import {
+  ADVERTISED_RESOURCE_SCOPES,
+  handleAuthorize,
+  MAIL_SCOPES,
+  SUPPORTED_OAUTH_SCOPES,
+  type OAuthGrantProps,
+} from './oauth-authorize.js';
+import { handleOidcRequest, isOidcRoutePath } from './oidc.js';
 import {
   authenticateRequest,
   isOAuthConfigured,
@@ -33,13 +40,18 @@ export interface WorkerDependencies {
 
 /** The Worker. `createWorker()` exists so tests can replace the Gmail login check. */
 export function createWorker(deps: WorkerDependencies = {}) {
-  let provider: { resource: string; instance: OAuthProvider<WorkerEnv> } | null = null;
+  let provider: {
+    resource: string;
+    instance: OAuthProvider<WorkerEnv>;
+    options: OAuthProviderOptions<WorkerEnv>;
+  } | null = null;
 
-  const oauthProvider = (resource: string): OAuthProvider<WorkerEnv> => {
+  const oauthBundle = (resource: string) => {
     if (provider?.resource !== resource) {
-      provider = { resource, instance: buildOAuthProvider(resource, deps) };
+      const options = buildOAuthProviderOptions(resource, deps);
+      provider = { resource, instance: new OAuthProvider<WorkerEnv>(options), options };
     }
-    return provider.instance;
+    return provider;
   };
 
   return {
@@ -54,9 +66,20 @@ export function createWorker(deps: WorkerDependencies = {}) {
         if (publicResponse) return finish(publicResponse);
 
         if (resource) {
-          // Built-in OAuth 2.1 authorization server: discovery, registration,
-          // token and /authorize; API keys still work through resolveExternalToken.
-          return finish(await oauthProvider(resource).fetch(request, env, ctx));
+          // Built-in OAuth 2.1 + OIDC authorization server: discovery, JWKS,
+          // /oauth/userinfo, registration, token (+ id_token) and /authorize;
+          // API keys still work through resolveExternalToken.
+          const bundle = oauthBundle(resource);
+          const oidcResponse = await handleOidcRequest(
+            request,
+            env,
+            ctx,
+            resource,
+            bundle.instance,
+            bundle.options,
+          );
+          if (oidcResponse) return finish(oidcResponse);
+          return finish(await bundle.instance.fetch(request, env, ctx));
         }
 
         // Every operational endpoint authenticates before mailbox resolution.
@@ -87,9 +110,12 @@ function oauthResource(env: WorkerEnv): string | null {
   return url.href;
 }
 
-function buildOAuthProvider(resource: string, deps: WorkerDependencies): OAuthProvider<WorkerEnv> {
+function buildOAuthProviderOptions(
+  resource: string,
+  deps: WorkerDependencies,
+): OAuthProviderOptions<WorkerEnv> {
   const origin = new URL(resource).origin;
-  return new OAuthProvider<WorkerEnv>({
+  return {
     // '/' matches the bare origin only; '/api' matches /api and /api/*.
     apiRoute: ['/', '/mcp', '/api', '/sse', '/message'],
     apiHandler: {
@@ -112,8 +138,8 @@ function buildOAuthProvider(resource: string, deps: WorkerDependencies): OAuthPr
     authorizeEndpoint: '/authorize',
     tokenEndpoint: '/oauth/token',
     clientRegistrationEndpoint: '/oauth/register',
-    scopesSupported: [...MAIL_SCOPES],
-    requiredScopes: [...MAIL_SCOPES],
+    scopesSupported: [...SUPPORTED_OAUTH_SCOPES],
+    requiredScopes: [...ADVERTISED_RESOURCE_SCOPES],
     resourceMetadata: {
       resource,
       authorization_servers: [origin],
@@ -141,7 +167,7 @@ function buildOAuthProvider(resource: string, deps: WorkerDependencies): OAuthPr
       };
       return { props, audience: resource };
     },
-  } as ConstructorParameters<typeof OAuthProvider<WorkerEnv>>[0]);
+  } as OAuthProviderOptions<WorkerEnv>;
 }
 
 interface ApiKeyProps {
@@ -168,8 +194,11 @@ async function publicRoute(request: Request, env: WorkerEnv, oauthEnabled: boole
   const url = new URL(request.url);
 
   if (request.method === 'OPTIONS') {
-    // The provider answers preflight for its own endpoints.
-    const providerPath = url.pathname.startsWith('/.well-known/oauth-') || url.pathname.startsWith('/oauth/');
+    // The provider and OIDC layer answer preflight for their own endpoints.
+    const providerPath =
+      url.pathname.startsWith('/.well-known/oauth-')
+      || isOidcRoutePath(url.pathname)
+      || url.pathname.startsWith('/oauth/');
     if (!(oauthEnabled && providerPath)) return corsPreflight(request, env);
     return null;
   }
