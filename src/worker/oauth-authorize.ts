@@ -58,43 +58,26 @@ function generateCspNonce(): string {
 function prepareProviderAuthorizeRequest(
   request: Request,
   canonicalResource?: string,
-): { providerRequest: Request; accountSlug?: string } {
+): Request {
+  if (!canonicalResource) return request;
   const url = new URL(request.url);
-  const explicitInstance = url.searchParams.get('instance')?.trim();
-  let accountSlug = explicitInstance && /^[A-Za-z0-9._@+-]{1,64}$/.test(explicitInstance) ? explicitInstance : undefined;
-
-  if (!canonicalResource) {
-    return { providerRequest: request, accountSlug };
-  }
-
   const resources = url.searchParams.getAll('resource');
-  if (resources.length === 0) {
-    return { providerRequest: request, accountSlug };
-  }
+  if (resources.length === 0) return request;
 
   let rewritten = false;
   const normalized = resources.map((entry) => {
-    const alias = normalizeMcpResourceAlias(entry, canonicalResource);
-    if (alias) {
-      if (!accountSlug && alias.accountSlug) accountSlug = alias.accountSlug;
-      if (alias.canonical !== entry) {
-        rewritten = true;
-        return alias.canonical;
-      }
+    const canonical = normalizeMcpResourceAlias(entry, canonicalResource);
+    if (canonical && canonical !== entry) {
+      rewritten = true;
+      return canonical;
     }
     return entry;
   });
 
-  if (!rewritten) {
-    return { providerRequest: request, accountSlug };
-  }
-
+  if (!rewritten) return request;
   url.searchParams.delete('resource');
   for (const val of normalized) url.searchParams.append('resource', val);
-  return {
-    providerRequest: new Request(url.toString(), request),
-    accountSlug,
-  };
+  return new Request(url.toString(), request);
 }
 
 export async function handleAuthorize(
@@ -105,7 +88,7 @@ export async function handleAuthorize(
   const oauth = env.OAUTH_PROVIDER;
   if (!oauth) return text('OAuth is not enabled on this deployment.', 503);
 
-  const { providerRequest, accountSlug } = prepareProviderAuthorizeRequest(request, deps.canonicalResource);
+  const providerRequest = prepareProviderAuthorizeRequest(request, deps.canonicalResource);
 
   if (request.method === 'GET') {
     let authRequest: AuthRequest;
@@ -119,7 +102,7 @@ export async function handleAuthorize(
     const details: ConsentDescription = await oauth.describeConsent(authRequest);
     const consent = await oauth.beginConsent(authRequest);
     const scriptNonce = generateCspNonce();
-    return page(consentPage(details, consent.handle, { error: undefined, nonce, accountSlug, scriptNonce }), 200, consent.headers, scriptNonce);
+    return page(consentPage(details, consent.handle, { error: undefined, nonce, scriptNonce }), 200, consent.headers, scriptNonce);
   }
 
   if (request.method !== 'POST') {
@@ -139,7 +122,7 @@ export async function handleAuthorize(
   const failForm = (message: string) =>
     isFetchSubmit
       ? Promise.resolve(jsonResult({ ok: false, error: message }, 400))
-      : rerender(providerRequest, env, handle, message, nonce, accountSlug);
+      : rerender(providerRequest, env, handle, message, nonce);
 
   try {
     if (form.get('decision') !== 'approve') {
@@ -236,14 +219,13 @@ async function rerender(
   handle: string,
   message: string,
   nonce?: string,
-  accountSlug?: string,
 ): Promise<Response> {
   const oauth = env.OAUTH_PROVIDER;
   const authRequest: AuthRequest = await oauth.parseAuthRequest(providerRequest);
   const details: ConsentDescription = await oauth.describeConsent(authRequest);
   const scriptNonce = generateCspNonce();
   return page(
-    consentPage(details, handle, { error: message, nonce, accountSlug, scriptNonce }),
+    consentPage(details, handle, { error: message, nonce, scriptNonce }),
     400,
     new Headers(),
     scriptNonce,
@@ -271,14 +253,11 @@ const SCOPE_LABELS: Record<string, string> = {
 interface ConsentPageOptions {
   error?: string;
   nonce?: string;
-  accountSlug?: string;
   scriptNonce: string;
 }
 
-function buildLoopbackEnhanceScript(scriptNonce: string, accountSlug?: string): string {
-  const slugLiteral = JSON.stringify(accountSlug ?? '').replace(/</g, '\\u003c');
+function buildLoopbackEnhanceScript(scriptNonce: string): string {
   const js = `(function(){
-var slug=${slugLiteral};
 var form=document.getElementById("oauth-form");
 var errBox=document.getElementById("oauth-error");
 var card=document.getElementById("oauth-card");
@@ -312,7 +291,7 @@ function renderConnected(email,redirectTo){
   if(email){
     var pill=document.createElement("div");
     pill.className="done-pill";
-    pill.textContent=slug?email+" · Account "+slug:email;
+    pill.textContent=email;
     card.appendChild(pill);
   }
   var msg=document.createElement("p");
@@ -423,9 +402,6 @@ function consentPage(details: ConsentDescription, handle: string, opts: ConsentP
   const hiddenNonce = opts.nonce
     ? `\n      <input type="hidden" name="nonce" value="${escape(opts.nonce)}">`
     : '';
-  const slotPill = opts.accountSlug
-    ? `<span class="slot-pill">Account ${escape(opts.accountSlug)}</span>`
-    : '';
 
   return `<!doctype html>
 <html lang="en">
@@ -444,7 +420,6 @@ function consentPage(details: ConsentDescription, handle: string, opts: ConsentP
     .brand-left { display: flex; align-items: center; gap: 10px; }
     .brand-eyebrow { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #94a3b8; }
     .brand-center { display: flex; align-items: center; justify-content: center; margin: 0 auto 18px; }
-    .slot-pill { background: rgba(234,67,53,0.16); border: 1px solid rgba(234,67,53,0.4); color: #fca5a5; font-size: 0.78rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
     h1 { font-size: 1.35rem; margin: 0 0 8px; }
     p { color: #94a3b8; margin: 0 0 14px; }
     label { display: block; margin: 14px 0 4px; font-weight: 600; }
@@ -470,7 +445,6 @@ function consentPage(details: ConsentDescription, handle: string, opts: ConsentP
         <img src="/favicon.svg" width="34" height="34" alt="XMAIL | Gmail">
         <span class="brand-eyebrow">XMAIL | Gmail</span>
       </div>
-      ${slotPill}
     </div>
     <h1>Connect a Gmail mailbox to ${name}</h1>
     <p>${origin} Access will be sent to <strong>${escape(details.redirectHost)}</strong>.</p>
@@ -490,7 +464,7 @@ function consentPage(details: ConsentDescription, handle: string, opts: ConsentP
       </div>
     </form>
   </main>
-  ${details.redirectIsLoopback ? buildLoopbackEnhanceScript(opts.scriptNonce, opts.accountSlug) : ''}
+  ${details.redirectIsLoopback ? buildLoopbackEnhanceScript(opts.scriptNonce) : ''}
 </body>
 </html>`;
 }

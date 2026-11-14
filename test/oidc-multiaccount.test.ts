@@ -275,29 +275,26 @@ test('multi-account connector: two Gmail mailboxes coexist under one client with
   assert.match(unauth.headers.get('WWW-Authenticate') ?? '', /^Bearer /);
 });
 
-test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completion work end-to-end', async () => {
+test('loopback X-OAuth-Fetch completion & branded auto-close UI work end-to-end on canonical endpoint', async () => {
   const app = setup();
   const loopbackRedirect = 'http://127.0.0.1:64601/callback';
-  const slotResource = `${ORIGIN}/account/2`;
 
-  // 1. Unauthenticated MCP call to /account/2 advertises per-slot PRM metadata URL
+  // 1. Discarded /account/2 route is not served (returns 404)
   const challengeRes = await app.fetch('/account/2', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   });
-  assert.equal(challengeRes.status, 401);
-  assert.match(
-    challengeRes.headers.get('WWW-Authenticate') ?? '',
-    /resource_metadata="https:\/\/gmail\.mcp\.xgi\.io\/\.well-known\/oauth-protected-resource\/account\/2"/,
-  );
+  assert.equal(challengeRes.status, 404);
+  const removedPrm = await app.fetch('/.well-known/oauth-protected-resource/account/2');
+  assert.equal(removedPrm.status, 404);
 
-  // 2. Per-slot Protected Resource Metadata advertises distinct resource & label
-  const prmRes = await app.fetch('/.well-known/oauth-protected-resource/account/2');
+  // 2. Canonical Protected Resource Metadata advertises root resource & brand icon
+  const prmRes = await app.fetch('/.well-known/oauth-protected-resource');
   assert.equal(prmRes.status, 200);
   const prm = (await prmRes.json()) as Record<string, unknown>;
-  assert.equal(prm.resource, slotResource);
-  assert.equal(prm.resource_name, 'XMAIL | Gmail (2)');
+  assert.equal(prm.resource, RESOURCE);
+  assert.equal(prm.resource_name, 'XMAIL | Gmail');
   assert.equal(prm.logo_uri, `${ORIGIN}/favicon.svg`);
 
   // 3. Register desktop loopback client
@@ -315,7 +312,7 @@ test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completi
   assert.equal(regRes.status, 201);
   const { client_id: clientId } = (await regRes.json()) as { client_id: string };
 
-  // 4. GET /authorize with resource=https://gmail.mcp.xgi.io/account/2 renders Account 2 pill + auto-close script
+  // 4. GET /authorize renders branded card + auto-close script
   const verifier = base64url(randomBytes(32));
   const challenge = base64url(createHash('sha256').update(verifier).digest());
   const authzQuery = new URLSearchParams({
@@ -323,10 +320,10 @@ test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completi
     client_id: clientId,
     redirect_uri: loopbackRedirect,
     scope: 'openid profile email offline_access mail.read mail.manage mail.send mail.delete',
-    state: 'desktop-slot-2',
+    state: 'desktop-loopback',
     code_challenge: challenge,
     code_challenge_method: 'S256',
-    resource: slotResource,
+    resource: `${ORIGIN}/mcp`,
   });
   const authzPath = `/authorize?${authzQuery}`;
   const pageRes = await app.fetch(authzPath);
@@ -335,7 +332,6 @@ test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completi
   assert.match(csp, /script-src 'nonce-[^']+'/);
   assert.match(csp, /connect-src 'self'/);
   const html = await pageRes.text();
-  assert.match(html, /Account 2/);
   assert.match(html, /X-OAuth-Fetch/);
   assert.match(html, /window\.close\(\)/);
   const handle = /name="handle" value="([^"]+)"/.exec(html)?.[1]?.replace(
@@ -392,11 +388,11 @@ test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completi
   assert.equal(goodJson.email, 'admin@petermolgaard.com');
   const cbUrl = new URL(goodJson.redirectTo);
   assert.equal(`${cbUrl.origin}${cbUrl.pathname}`, loopbackRedirect);
-  assert.equal(cbUrl.searchParams.get('state'), 'desktop-slot-2');
+  assert.equal(cbUrl.searchParams.get('state'), 'desktop-loopback');
   const code = cbUrl.searchParams.get('code');
   assert.ok(code);
 
-  // 7. Token exchange with resource=https://gmail.mcp.xgi.io/account/2 succeeds and serves MCP on /account/2
+  // 7. Token exchange succeeds and serves MCP on canonical bare origin
   const tokRes = await app.fetch('/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -406,7 +402,7 @@ test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completi
       redirect_uri: loopbackRedirect,
       client_id: clientId,
       code_verifier: verifier,
-      resource: slotResource,
+      resource: `${ORIGIN}/mcp`,
     }),
   });
   assert.equal(tokRes.status, 200);
@@ -414,7 +410,7 @@ test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completi
   assert.ok(tokJson.access_token);
   assert.ok(tokJson.id_token);
 
-  const mcpInit = await app.fetch('/account/2', {
+  const mcpInit = await app.fetch('/', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${tokJson.access_token}`,
