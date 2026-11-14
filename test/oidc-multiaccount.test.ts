@@ -274,3 +274,156 @@ test('multi-account connector: two Gmail mailboxes coexist under one client with
   assert.equal(unauth.status, 401);
   assert.match(unauth.headers.get('WWW-Authenticate') ?? '', /^Bearer /);
 });
+
+test('desktop multi-account slots (/account/2) & loopback X-OAuth-Fetch completion work end-to-end', async () => {
+  const app = setup();
+  const loopbackRedirect = 'http://127.0.0.1:64601/callback';
+  const slotResource = `${ORIGIN}/account/2`;
+
+  // 1. Unauthenticated MCP call to /account/2 advertises per-slot PRM metadata URL
+  const challengeRes = await app.fetch('/account/2', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(challengeRes.status, 401);
+  assert.match(
+    challengeRes.headers.get('WWW-Authenticate') ?? '',
+    /resource_metadata="https:\/\/gmail\.mcp\.xgi\.io\/\.well-known\/oauth-protected-resource\/account\/2"/,
+  );
+
+  // 2. Per-slot Protected Resource Metadata advertises distinct resource & label
+  const prmRes = await app.fetch('/.well-known/oauth-protected-resource/account/2');
+  assert.equal(prmRes.status, 200);
+  const prm = (await prmRes.json()) as Record<string, unknown>;
+  assert.equal(prm.resource, slotResource);
+  assert.equal(prm.resource_name, 'XMAIL | Gmail (2)');
+  assert.equal(prm.logo_uri, `${ORIGIN}/favicon.svg`);
+
+  // 3. Register desktop loopback client
+  const regRes = await app.fetch('/oauth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_name: 'Codex Desktop',
+      redirect_uris: [loopbackRedirect],
+      token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+    }),
+  });
+  assert.equal(regRes.status, 201);
+  const { client_id: clientId } = (await regRes.json()) as { client_id: string };
+
+  // 4. GET /authorize with resource=https://gmail.mcp.xgi.io/account/2 renders Account 2 pill + auto-close script
+  const verifier = base64url(randomBytes(32));
+  const challenge = base64url(createHash('sha256').update(verifier).digest());
+  const authzQuery = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: loopbackRedirect,
+    scope: 'openid profile email offline_access mail.read mail.manage mail.send mail.delete',
+    state: 'desktop-slot-2',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    resource: slotResource,
+  });
+  const authzPath = `/authorize?${authzQuery}`;
+  const pageRes = await app.fetch(authzPath);
+  assert.equal(pageRes.status, 200);
+  const csp = pageRes.headers.get('Content-Security-Policy') ?? '';
+  assert.match(csp, /script-src 'nonce-[^']+'/);
+  assert.match(csp, /connect-src 'self'/);
+  const html = await pageRes.text();
+  assert.match(html, /Account 2/);
+  assert.match(html, /X-OAuth-Fetch/);
+  assert.match(html, /window\.close\(\)/);
+  const handle = /name="handle" value="([^"]+)"/.exec(html)?.[1]?.replace(
+    /&#(\d+);/g,
+    (_, code) => String.fromCharCode(Number(code)),
+  );
+  assert.ok(handle);
+  const cookie = pageRes.headers.getSetCookie().map((entry) => entry.split(';')[0]).join('; ');
+
+  // 5. Wrong password via X-OAuth-Fetch returns 400 JSON without consuming handle
+  const badForm = new URLSearchParams({
+    handle: handle!,
+    email: 'admin@petermolgaard.com',
+    appPassword: 'wrongpasswordxxxx',
+    decision: 'approve',
+    scope: 'mail.read',
+  });
+  const badSubmit = await app.fetch(authzPath, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-OAuth-Fetch': '1',
+      Cookie: cookie,
+    },
+    body: badForm,
+  });
+  assert.equal(badSubmit.status, 400);
+  const badJson = (await badSubmit.json()) as { ok: boolean; error?: string };
+  assert.equal(badJson.ok, false);
+  assert.match(badJson.error ?? '', /Gmail did not accept/);
+
+  // 6. Valid password via X-OAuth-Fetch returns 200 JSON { ok: true, redirectTo, email }
+  const goodForm = new URLSearchParams({
+    handle: handle!,
+    email: 'admin@petermolgaard.com',
+    appPassword: APP_PASSWORD_B,
+    decision: 'approve',
+  });
+  for (const s of ['offline_access', 'mail.read', 'mail.manage', 'mail.send', 'mail.delete']) {
+    goodForm.append('scope', s);
+  }
+  const goodSubmit = await app.fetch(authzPath, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-OAuth-Fetch': '1',
+      Cookie: cookie,
+    },
+    body: goodForm,
+  });
+  assert.equal(goodSubmit.status, 200);
+  const goodJson = (await goodSubmit.json()) as { ok: boolean; redirectTo: string; email: string };
+  assert.equal(goodJson.ok, true);
+  assert.equal(goodJson.email, 'admin@petermolgaard.com');
+  const cbUrl = new URL(goodJson.redirectTo);
+  assert.equal(`${cbUrl.origin}${cbUrl.pathname}`, loopbackRedirect);
+  assert.equal(cbUrl.searchParams.get('state'), 'desktop-slot-2');
+  const code = cbUrl.searchParams.get('code');
+  assert.ok(code);
+
+  // 7. Token exchange with resource=https://gmail.mcp.xgi.io/account/2 succeeds and serves MCP on /account/2
+  const tokRes = await app.fetch('/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code!,
+      redirect_uri: loopbackRedirect,
+      client_id: clientId,
+      code_verifier: verifier,
+      resource: slotResource,
+    }),
+  });
+  assert.equal(tokRes.status, 200);
+  const tokJson = (await tokRes.json()) as { access_token: string; id_token?: string };
+  assert.ok(tokJson.access_token);
+  assert.ok(tokJson.id_token);
+
+  const mcpInit = await app.fetch('/account/2', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${tokJson.access_token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+  });
+  assert.equal(mcpInit.status, 200);
+  const mcpBody = (await mcpInit.json()) as { result?: { serverInfo?: { name?: string } } };
+  assert.equal(mcpBody.result?.serverInfo?.name, '@xtnd-dynamics/mcp-gmail');
+});
