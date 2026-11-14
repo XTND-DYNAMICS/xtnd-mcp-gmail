@@ -314,11 +314,7 @@ export const RemoveDelegateSchema = z.object({
   delegateEmail: HeaderValue.describe('Delegate address to remove'),
 }).strict();
 
-// ------------------------------------------------------------- Direct / IMAP aliases
-export const ListFoldersSchema = z.object({}).strict();
-export const CreateFolderSchema = z.object({ name: z.string().min(1).max(256) }).strict();
-export const RenameFolderSchema = z.object({ oldName: z.string().min(1), newName: z.string().min(1) }).strict();
-export const DeleteFolderSchema = z.object({ name: z.string().min(1) }).strict();
+// ------------------------------------------------------- REST API (src/worker/index.ts)
 export const SearchEmailsSchema = z.object({
   folder: z.string().optional().default('INBOX'),
   query: z.string().optional(),
@@ -328,83 +324,14 @@ export const SearchEmailsSchema = z.object({
   unreadOnly: z.boolean().optional().default(false),
   limit: z.number().optional().default(20),
 });
-export const GetRecentEmailsSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  limit: z.number().optional().default(10),
-});
 export const GetEmailContentSchema = z.object({
   folder: z.string().optional().default('INBOX'),
   uid: z.number(),
   format: z.enum(['markdown', 'text', 'html']).optional().default('markdown'),
-});
-export const GetEmailThreadSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  uidOrMessageId: z.string(),
-});
-export const MarkEmailsSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  uids: z.array(z.number()),
-  action: z.enum(['read', 'unread', 'flag', 'unflag']),
-});
-export const MoveEmailsSchema = z.object({
-  sourceFolder: z.string().optional().default('INBOX'),
-  targetFolder: z.string(),
-  uids: z.array(z.number()),
-});
-export const DeleteEmailsSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  uids: z.array(z.number()),
-  permanent: z.boolean().optional().default(false),
 });
 export const SendEmailSchema = z.object({
   to: z.string(),
   subject: z.string(),
   bodyText: z.string().optional(),
   bodyHtml: z.string().optional(),
-});
-export const ReplyEmailSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  uid: z.number(),
-  bodyText: z.string(),
-  replyAll: z.boolean().optional().default(false),
-  bodyHtml: z.string().optional(),
-});
-export const ForwardEmailSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  uid: z.number(),
-  to: z.string(),
-  comment: z.string().optional(),
-});
-export const UpdateDraftDirectSchema = z.object({
-  draftId: z.string(),
-  to: z.string().optional(),
-  cc: z.string().optional(),
-  bcc: z.string().optional(),
-  subject: z.string().optional(),
-  bodyText: z.string().optional(),
-  bodyHtml: z.string().optional(),
-});
-export const ListDraftsDirectSchema = z.object({
-  limit: z.number().optional().default(20),
-});
-export const GetDraftDirectSchema = z.object({
-  draftId: z.string(),
-});
-export const SendDraftDirectSchema = z.object({
-  draftId: z.string(),
-});
-export const DeleteDraftDirectSchema = z.object({
-  draftId: z.string(),
-});
-export const ArchiveEmailDirectSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  id: z.string(),
-});
-export const StarEmailDirectSchema = z.object({
-  folder: z.string().optional().default('INBOX'),
-  id: z.string(),
-  star: z.boolean().default(true),
-});
-export const UntrashEmailDirectSchema = z.object({
-  id: z.string(),
 });

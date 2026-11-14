@@ -216,7 +216,7 @@ async function runStdioServer(args: string[]): Promise<void> {
       smtpHost,
       smtpPort,
     });
-    const server = createAppPasswordGmailMcpServer(() => client);
+    const server = createAppPasswordGmailMcpServer({ getClient: () => client });
     await server.connect(new StdioServerTransport());
     return;
   }

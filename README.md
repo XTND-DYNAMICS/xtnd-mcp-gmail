@@ -69,10 +69,16 @@ npx -y @xtnd-dynamics/mcp-gmail setup --profile work
 
 | Category | Tools |
 |---|---|
-| **Reading & Search** | `search_emails`, `get_recent_emails`, `get_email`, `get_thread` |
-| **Outbound Email** | `send_email`, `reply_email`, `forward_email`, `create_draft` |
-| **Organization & Labels** | `list_labels`, `create_label`, `delete_label` |
-| **Triage & Cleanup** | `trash_email`, `mark_email_read` |
+| **Reading & Search** | `search_emails`, `get_recent_emails`, `get_email`, `get_thread`, `get_attachment`, `get_raw_email`, `get_profile` |
+| **Outbound Email** | `send_email`, `reply_email`, `forward_email` |
+| **Drafts** | `create_draft`, `create_reply_draft`, `create_forward_draft`, `update_draft`, `list_drafts`, `get_draft`, `send_draft`, `delete_draft` |
+| **Organization & Labels** | `list_labels`, `create_label`, `rename_label`, `delete_label`, `modify_email_labels`, `batch_modify_labels` |
+| **Triage & Cleanup** | `archive_email`, `star_email`, `mark_email_read`, `move_emails`, `trash_email`, `untrash_email`, `delete_email_permanently` |
+
+The local stdio server and the hosted Worker serve the same tools from one definition
+(`src/mcp/app-password-server.ts`). On the hosted Worker each tool needs its OAuth scope
+(`mail.read`, `mail.manage`, `mail.send` or `mail.delete`), and because it has no filesystem,
+attachments are passed as `{ filename, contentType, dataBase64 }` objects and `saveToPath` is not available.
 
 ---
 
@@ -85,6 +91,7 @@ npx -y @xtnd-dynamics/mcp-gmail setup --profile work
 * **Discovery Card:** `https://gmail.mcp.xgi.io/.well-known/mcp/server-card.json`
 * **OpenAPI 3.1:** `https://gmail.mcp.xgi.io/openapi.json`
 * **Health Probe:** `https://gmail.mcp.xgi.io/health`
+* **Former hosted tool names** still answer: `list_folders`, `create_folder`, `rename_folder`, `delete_folder`, `get_email_content`, `get_email_thread`, `mark_emails` and `delete_emails` are mapped onto the tools above.
 
 ---
 
