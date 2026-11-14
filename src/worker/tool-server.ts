@@ -19,6 +19,7 @@ import type { GmailAppPasswordCredentials } from '../types.js';
 export interface HostedToolServerOptions {
   scopes: readonly string[];
   resolveCredentials: () => Promise<GmailAppPasswordCredentials | null>;
+  origin?: string;
 }
 
 const ACCOUNT_NOT_LINKED = 'No Gmail mailbox is linked to this authenticated connection. '
@@ -26,13 +27,16 @@ const ACCOUNT_NOT_LINKED = 'No Gmail mailbox is linked to this authenticated con
 
 const INSTRUCTIONS = 'Mailbox credentials are linked once to the authenticated gateway account and are never '
   + 'supplied as MCP parameters or request headers. This hosted server has no filesystem: pass attachments '
-  + 'as { filename, contentType, dataBase64 } objects and omit saveToPath.';
+  + 'as { filename, contentType, dataBase64 } objects and omit saveToPath. '
+  + 'Always prefer create_draft, create_reply_draft, or update_draft over send_email, reply_email, forward_email, or send_draft unless the user explicitly asks to send immediately. '
+  + 'Never call delete_email_permanently or delete_label without explicit user confirmation in the current turn.';
 
 export function createHostedToolServer(options: HostedToolServerOptions): McpServer {
   let client: Promise<AppPasswordGmailClient> | undefined;
 
   return createAppPasswordGmailMcpServer({
     fileAccess: false,
+    origin: options.origin,
     instructions: INSTRUCTIONS,
     authorize: (scope) => {
       if (!options.scopes.includes(scope)) {

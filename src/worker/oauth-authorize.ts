@@ -176,6 +176,9 @@ function consentPage(details: ConsentDescription, handle: string, error?: string
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" href="/favicon.ico" sizes="32x32">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <title>Connect Gmail to ${name}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #090d16; color: #e2e8f0; margin: 0; padding: 32px 16px; line-height: 1.5; }
@@ -223,7 +226,7 @@ function page(html: string, status: number, headers: Headers): Response {
   headers.set('Cache-Control', 'no-store');
   headers.set('X-Frame-Options', 'DENY');
   // No form-action: browsers apply it to the redirect after the POST, which goes to the client.
-  headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+  headers.set('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
   return new Response(html, { status, headers });
 }
 

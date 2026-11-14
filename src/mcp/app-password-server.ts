@@ -15,6 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { AppPasswordGmailClient } from '../core/app-password-client.js';
+import { BRAND_DATA_URI_ICONS, brandIconsForOrigin } from './brand-icons.js';
 import { BUILD_STAMP } from '../version.generated.js';
 
 export const MAIL_SCOPES = ['mail.read', 'mail.manage', 'mail.send', 'mail.delete'] as const;
@@ -43,6 +44,8 @@ export interface AppPasswordServerOptions {
   formatError?: (error: unknown, operation: string) => string;
   /** Server instructions sent with the initialize result. */
   instructions?: string;
+  /** Public HTTPS origin for SEP-973 icon URLs when served by the Cloudflare Worker. */
+  origin?: string;
 }
 
 interface ToolEnv {
@@ -572,19 +575,38 @@ export function requiredScopeForTool(name: string): MailScope | undefined {
 
 const defaultFormatError = (error: unknown) => `Error: ${error instanceof Error ? error.message : String(error)}`;
 
+const DEFAULT_INSTRUCTIONS = 'Always prefer create_draft, create_reply_draft, create_forward_draft, or update_draft '
+  + 'over send_email, reply_email, forward_email, or send_draft unless the user explicitly asks to send immediately. '
+  + 'Never call delete_email_permanently or delete_label without explicit user confirmation in the current turn.';
+
+const NON_IDEMPOTENT_TOOLS = new Set([
+  'send_email',
+  'reply_email',
+  'forward_email',
+  'send_draft',
+  'create_draft',
+  'create_reply_draft',
+  'create_forward_draft',
+  'create_label',
+]);
+
 export function createAppPasswordGmailMcpServer(options: AppPasswordServerOptions): McpServer {
   const env: ToolEnv = { fileAccess: options.fileAccess ?? true };
   const formatError = options.formatError ?? defaultFormatError;
   const authorize = async (scope: MailScope, operation: string) => {
     if (options.authorize) await options.authorize(scope, operation);
   };
+  const origin = options.origin?.replace(/\/+$/, '');
 
   const server = new McpServer(
     {
       name: '@xtnd-dynamics/mcp-gmail',
+      title: 'XMAIL | Gmail',
       version: BUILD_STAMP.version,
+      websiteUrl: origin || 'https://gmail.mcp.xgi.io',
+      icons: origin ? brandIconsForOrigin(origin) : BRAND_DATA_URI_ICONS,
     },
-    options.instructions ? { instructions: options.instructions } : undefined,
+    { instructions: options.instructions ?? DEFAULT_INSTRUCTIONS },
   );
 
   for (const tool of APP_PASSWORD_TOOLS) {
@@ -596,6 +618,8 @@ export function createAppPasswordGmailMcpServer(options: AppPasswordServerOption
         annotations: {
           readOnlyHint: tool.scope === 'mail.read',
           destructiveHint: tool.scope === 'mail.delete',
+          idempotentHint: !NON_IDEMPOTENT_TOOLS.has(tool.name),
+          openWorldHint: tool.scope === 'mail.send',
         },
       },
       async (args: Record<string, unknown>) => {

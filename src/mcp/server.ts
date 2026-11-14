@@ -8,6 +8,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { GmailClient } from '../core/client.js';
+import { BRAND_DATA_URI_ICONS } from './brand-icons.js';
 import { registerDraftTools } from './tools/drafts.js';
 import { registerLabelTools } from './tools/labels.js';
 import { registerOutboundTools } from './tools/outbound.js';
@@ -17,8 +18,20 @@ import { registerSettingsTools } from './tools/settings.js';
 import { registerTriageTools } from './tools/triage.js';
 import { BUILD_STAMP } from '../version.generated.js';
 
+const INSTRUCTIONS = 'Always prefer create_draft, create_reply_draft, or update_draft over send_message, reply_message, forward_message, or send_draft unless the user explicitly asks to send immediately. '
+  + 'Never call delete_message_permanently, delete_thread_permanently, delete_label, or update_auto_forwarding without explicit user confirmation in the current turn.';
+
 export function createGmailMcpServer(getClient: () => GmailClient): McpServer {
-  const server = new McpServer({ name: '@xtnd-dynamics/mcp-gmail', version: BUILD_STAMP.version });
+  const server = new McpServer(
+    {
+      name: '@xtnd-dynamics/mcp-gmail',
+      title: 'XMAIL | Gmail',
+      version: BUILD_STAMP.version,
+      websiteUrl: 'https://gmail.mcp.xgi.io',
+      icons: BRAND_DATA_URI_ICONS,
+    },
+    { instructions: INSTRUCTIONS },
+  );
 
   registerSearchTools(server, getClient);
   registerReadTools(server, getClient);
