@@ -1,9 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { AppPasswordGmailClient } from '../core/app-password-client.js';
-import { createAppPasswordGmailMcpServer } from '../mcp/app-password-server.js';
+import { MAIL_SCOPES } from '../mcp/app-password-server.js';
 import type { GmailAppPasswordCredentials } from '../types.js';
 import { readRequestJson, RequestBodyTooLargeError } from './request-body.js';
+import { createHostedToolServer } from './tool-server.js';
 
 const SESSION_TTL_MS = 15 * 60 * 1_000;
 const MAX_ACTIVE_SESSIONS = 64;
@@ -42,8 +42,12 @@ export async function handleSseConnect(
   const sessionId = crypto.randomUUID();
   const messageEndpoint = `${url.origin}/message?sessionId=${sessionId}`;
 
-  const getClient = () => new AppPasswordGmailClient(credentials);
-  const server = createAppPasswordGmailMcpServer(getClient);
+  // The caller holds every mail scope (checked before connecting) and its
+  // mailbox is already resolved.
+  const server = createHostedToolServer({
+    scopes: MAIL_SCOPES,
+    resolveCredentials: async () => credentials,
+  });
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();

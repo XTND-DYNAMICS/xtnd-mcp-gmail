@@ -1,4 +1,5 @@
 import { AppPasswordGmailClient } from '../core/app-password-client.js';
+import { APP_PASSWORD_TOOL_NAMES } from '../mcp/app-password-server.js';
 import { GetEmailContentSchema, SearchEmailsSchema, SendEmailSchema } from '../mcp/schemas.js';
 import type { GmailAppPasswordCredentials, WorkerEnv } from '../types.js';
 import { OAuthProvider } from '@cloudflare/workers-oauth-provider';
@@ -295,8 +296,7 @@ async function protectedRoute(
       return (json(await client.sendEmail(body as any)));
     }
 
-    return (json({ error: 'Not Found' }, 404));
-  return json({ error: 'Not Found' }, 404);
+    return json({ error: 'Not Found' }, 404);
 }
 
 function errorResponse(error: unknown): Response {
@@ -425,11 +425,7 @@ function serverCard(): Record<string, unknown> {
       accountLinking: '/authorize (OAuth sign-in) or /api/accounts/link (API keys)',
       rawMailboxCredentialHeaders: 'disabled by default',
     },
-    tools: [
-      'list_folders', 'create_folder', 'rename_folder', 'delete_folder', 'search_emails',
-      'get_recent_emails', 'get_email_content', 'get_email_thread', 'mark_emails',
-      'move_emails', 'delete_emails', 'send_email', 'reply_email', 'forward_email', 'create_draft',
-    ],
+    tools: [...APP_PASSWORD_TOOL_NAMES],
   };
 }
 
