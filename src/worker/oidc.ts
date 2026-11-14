@@ -45,6 +45,60 @@ const OIDC_CORS_HEADERS: Record<string, string> = {
   'Access-Control-Max-Age': '86400',
 };
 
+export interface ParsedAccountEndpoint {
+  endpointPath: string;
+  slug: string;
+}
+
+/**
+ * Named multi-account MCP endpoint paths (`/account/<slug>` and `/accounts/<slug>`),
+ * allowing desktop MCP hosts that store one OAuth token per server URL (such as
+ * ChatGPT Desktop / Codex local plugins, Claude Desktop, and Cursor) to connect
+ * multiple independent Gmail / Google Workspace mailboxes simultaneously.
+ */
+export function parseAccountEndpointPath(pathname: string): ParsedAccountEndpoint | null {
+  const match = /^\/(accounts?)\/([^/]+)\/?$/.exec(pathname);
+  if (!match) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(match[2]).trim();
+  } catch {
+    return null;
+  }
+  if (!decoded || decoded === '.' || decoded === '..' || !/^[A-Za-z0-9._@+-]{1,64}$/.test(decoded)) {
+    return null;
+  }
+  return {
+    endpointPath: `/${match[1]}/${encodeURIComponent(decoded)}`,
+    slug: decoded,
+  };
+}
+
+export function normalizeMcpResourceAlias(
+  rawResource: string,
+  canonicalResource: string,
+): { canonical: string; accountSlug?: string } | null {
+  let parsed: URL;
+  let canonicalUrl: URL;
+  try {
+    parsed = new URL(rawResource);
+    canonicalUrl = new URL(canonicalResource);
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== canonicalUrl.origin || parsed.username || parsed.password || parsed.hash) {
+    return null;
+  }
+  if (parsed.pathname === '/' || parsed.pathname === '/mcp' || parsed.pathname === '/mcp/') {
+    return { canonical: canonicalResource };
+  }
+  const account = parseAccountEndpointPath(parsed.pathname);
+  if (account) {
+    return { canonical: canonicalResource, accountSlug: account.slug };
+  }
+  return null;
+}
+
 export function isOidcRoutePath(pathname: string): boolean {
   return (
     isDiscoveryPath(pathname)
@@ -97,16 +151,30 @@ export async function handleOidcRequest(
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return oidcJson({ error: 'method_not_allowed' }, 405, { Allow: 'GET, HEAD, OPTIONS' });
     }
+    const prefix = '/.well-known/oauth-protected-resource';
+    const rawSuffix = pathname === prefix || pathname === `${prefix}/` ? '' : pathname.slice(prefix.length);
+    const isMcpAlias = rawSuffix === '/mcp' || rawSuffix === '/mcp/';
+    const accountAlias = rawSuffix && !isMcpAlias ? parseAccountEndpointPath(rawSuffix) : null;
+    if (rawSuffix !== '' && !isMcpAlias && !accountAlias) {
+      return oidcJson({ error: 'not_found' }, 404);
+    }
+
     const upstream = await provider.fetch(
-      new Request(request.url, { method: 'GET' }),
+      new Request(`${origin}${prefix}`, { method: 'GET' }),
       env,
       ctx,
     );
     if (!upstream.ok) return upstream;
     const base = (await upstream.json()) as Record<string, unknown>;
+    const advertisedResource = accountAlias
+      ? `${origin}${accountAlias.endpointPath}`
+      : isMcpAlias
+        ? `${origin}/mcp`
+        : base.resource;
     const enriched: Record<string, unknown> = {
       ...base,
-      resource_name: 'XMAIL | Gmail',
+      resource: advertisedResource,
+      resource_name: accountAlias ? `XMAIL | Gmail (${accountAlias.slug})` : 'XMAIL | Gmail',
       logo_uri: `${origin}/favicon.svg`,
       icons: brandIconsForOrigin(origin),
       resource_documentation: 'https://github.com/XTND-DYNAMICS/xtnd-mcp-gmail#readme',
@@ -177,19 +245,42 @@ export async function handleOidcRequest(
 
   if (pathname === '/oauth/token') {
     let grantType = '';
+    let effectiveRequest = request;
     if (request.method === 'POST') {
       const contentType = request.headers.get('Content-Type') ?? '';
       if (contentType.includes('application/x-www-form-urlencoded')) {
         try {
-          const params = new URLSearchParams(await request.clone().text());
+          const rawBody = await request.clone().text();
+          const params = new URLSearchParams(rawBody);
           grantType = params.get('grant_type') ?? '';
+          const resources = params.getAll('resource');
+          if (resources.length > 0) {
+            let rewritten = false;
+            const normalizedValues = resources.map((entry) => {
+              const alias = normalizeMcpResourceAlias(entry, resource);
+              if (alias && alias.canonical !== entry) {
+                rewritten = true;
+                return alias.canonical;
+              }
+              return entry;
+            });
+            if (rewritten) {
+              params.delete('resource');
+              for (const val of normalizedValues) params.append('resource', val);
+              effectiveRequest = new Request(request.url, {
+                method: request.method,
+                headers: request.headers,
+                body: params.toString(),
+              });
+            }
+          }
         } catch {
           grantType = '';
         }
       }
     }
 
-    const tokenResponse = await provider.fetch(request, env, ctx);
+    const tokenResponse = await provider.fetch(effectiveRequest, env, ctx);
     if (
       request.method !== 'POST'
       || tokenResponse.status !== 200
