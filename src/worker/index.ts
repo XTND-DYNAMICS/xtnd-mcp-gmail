@@ -12,7 +12,7 @@ import {
   SUPPORTED_OAUTH_SCOPES,
   type OAuthGrantProps,
 } from './oauth-authorize.js';
-import { handleOidcRequest, isOidcRoutePath, parseAccountEndpointPath } from './oidc.js';
+import { handleOidcRequest, isOidcRoutePath } from './oidc.js';
 import {
   authenticateRequest,
   isOAuthConfigured,
@@ -79,8 +79,7 @@ export function createWorker(deps: WorkerDependencies = {}) {
             bundle.options,
           );
           if (oidcResponse) return finish(oidcResponse);
-          const providerResponse = await bundle.instance.fetch(request, env, ctx);
-          return finish(rewriteAccountChallenge(providerResponse, request, resource));
+          return finish(await bundle.instance.fetch(request, env, ctx));
         }
 
         // Every operational endpoint authenticates before mailbox resolution.
@@ -117,8 +116,8 @@ function buildOAuthProviderOptions(
 ): OAuthProviderOptions<WorkerEnv> {
   const origin = new URL(resource).origin;
   return {
-    // '/' matches the bare origin only; '/api' and '/account(s)' match their subtrees.
-    apiRoute: ['/', '/mcp', '/account', '/accounts', '/api', '/sse', '/message'],
+    // '/' matches the bare origin only; '/api' matches /api and /api/*.
+    apiRoute: ['/', '/mcp', '/api', '/sse', '/message'],
     apiHandler: {
       async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
         try {
@@ -274,9 +273,9 @@ async function protectedRoute(
       return (json({ error: 'Not Found' }, 404));
     }
 
-    // The connection URL is the bare origin; /mcp and /account/<slug> stay as
-    // aliases so desktop hosts can connect multiple independent mailboxes.
-    if (url.pathname === '/' || url.pathname === '/mcp' || parseAccountEndpointPath(url.pathname) !== null) {
+    // The connection URL is the bare origin; /mcp stays as an alias so
+    // existing clients keep working.
+    if (url.pathname === '/' || url.pathname === '/mcp') {
       return (await handleMcpStreamableHttp(request, {
         subject: principal.subject,
         scopes: principal.scopes ?? [],
@@ -367,21 +366,6 @@ function hasScope(principal: AuthenticatedPrincipal, requiredScope: string): boo
   return principal.scopes?.includes(requiredScope) ?? false;
 }
 
-function rewriteAccountChallenge(response: Response, request: Request, canonicalResource: string): Response {
-  if (response.status !== 401) return response;
-  const account = parseAccountEndpointPath(new URL(request.url).pathname);
-  if (!account) return response;
-  const wwwAuth = response.headers.get('WWW-Authenticate');
-  if (!wwwAuth) return response;
-  const origin = new URL(canonicalResource).origin;
-  const rootMeta = `${origin}/.well-known/oauth-protected-resource`;
-  const accountMeta = `${rootMeta}${account.endpointPath}`;
-  if (!wwwAuth.includes(`"${rootMeta}"`)) return response;
-  const headers = new Headers(response.headers);
-  headers.set('WWW-Authenticate', wwwAuth.replace(`"${rootMeta}"`, `"${accountMeta}"`));
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-}
-
 function unauthorized(
   message: string,
   request: Request,
@@ -389,12 +373,7 @@ function unauthorized(
 ): Response {
   const headers: Record<string, string> = {};
   if (isOAuthConfigured(env)) {
-    const reqUrl = new URL(request.url);
-    const account = parseAccountEndpointPath(reqUrl.pathname);
-    const metaPath = account
-      ? `/.well-known/oauth-protected-resource${account.endpointPath}`
-      : '/.well-known/oauth-protected-resource';
-    headers['WWW-Authenticate'] = `Bearer resource_metadata="${new URL(metaPath, request.url).href}"`;
+    headers['WWW-Authenticate'] = `Bearer resource_metadata="${new URL('/.well-known/oauth-protected-resource', request.url).href}"`;
   }
   return json({ error: message }, 401, headers);
 }
